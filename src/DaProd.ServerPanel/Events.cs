@@ -72,24 +72,41 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
     /// <summary>POST /register {user, password}: gli utenti si creano l'account dal launcher.</summary>
     async Task<(int code, string msg)> Register(HttpListenerContext ctx)
     {
+        if (s.Maintenance) return (503, s.MaintenanceMessage);
         if (!s.AllowRegistration) return (403, "Le registrazioni sono chiuse.");
         var ip = ctx.Request.RemoteEndPoint.Address.ToString();
+        var (user, pwd) = await ReadCredentials(ctx);
+        if (!System.Text.RegularExpressions.Regex.IsMatch(user, "^[A-Za-z0-9_]{3,16}$")) return (400, "Nome utente: 3-16 caratteri, solo lettere, numeri e _.");
+        if (pwd.Length < 6) return (400, "La password deve avere almeno 6 caratteri.");
         lock (_lastRegister)
         {
             // anti-spam: un account ogni 30 secondi per indirizzo
             if (_lastRegister.TryGetValue(ip, out var t) && DateTime.Now - t < TimeSpan.FromSeconds(30)) return (429, "Attendi qualche secondo e riprova.");
-            _lastRegister[ip] = DateTime.Now;
         }
-        using var doc = await JsonDocument.ParseAsync(ctx.Request.InputStream);
-        var user = doc.RootElement.GetProperty("user").GetString()?.Trim() ?? "";
-        var pwd = doc.RootElement.GetProperty("password").GetString() ?? "";
-        if (!System.Text.RegularExpressions.Regex.IsMatch(user, "^[A-Za-z0-9_]{3,16}$")) return (400, "Nome utente: 3-16 caratteri, solo lettere, numeri e _.");
-        if (pwd.Length < 6) return (400, "La password deve avere almeno 6 caratteri.");
         var exists = await srv.QueryAsync("aaemu_login", $"SELECT id FROM users WHERE username='{user}'");
         if (exists.Rows.Count > 0) return (409, "Nome utente già in uso.");
         await srv.CreateAccountAsync(user, pwd);
+        lock (_lastRegister) _lastRegister[ip] = DateTime.Now;
         log("api", $"Nuovo account registrato dal launcher: {user} ({ip})");
         return (200, "Account creato! Ora puoi giocare.");
+    }
+
+    /// <summary>POST /login {user, password}: verifica le credenziali prima di avviare il gioco.</summary>
+    async Task<(int code, string msg)> Login(HttpListenerContext ctx)
+    {
+        if (s.Maintenance) return (503, s.MaintenanceMessage);
+        var (user, pwd) = await ReadCredentials(ctx);
+        if (!System.Text.RegularExpressions.Regex.IsMatch(user, "^[A-Za-z0-9_]{1,32}$")) return (401, "Utente o password errati.");
+        var t = await srv.QueryAsync("aaemu_login", $"SELECT password FROM users WHERE username='{user}'");
+        if (t.Rows.Count == 0)
+            return s.AutoAccount ? (200, "Nuovo account: verrà creato al primo accesso.") : (401, "Utente non trovato. Premi Registrati per crearlo.");
+        return (string)t.Rows[0]["password"] == ServerManager.HashPassword(pwd) ? (200, "Accesso riuscito.") : (401, "Utente o password errati.");
+    }
+
+    static async Task<(string user, string pwd)> ReadCredentials(HttpListenerContext ctx)
+    {
+        using var doc = await JsonDocument.ParseAsync(ctx.Request.InputStream);
+        return (doc.RootElement.GetProperty("user").GetString()?.Trim() ?? "", doc.RootElement.GetProperty("password").GetString() ?? "");
     }
     HttpListener? _l;
     List<ManifestFile>? _manifest;
@@ -145,9 +162,9 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
         try
         {
             var path = Uri.UnescapeDataString(ctx.Request.Url!.AbsolutePath);
-            if (path == "/register" && ctx.Request.HttpMethod == "POST")
+            if (path is "/register" or "/login" && ctx.Request.HttpMethod == "POST")
             {
-                var (code, msg) = await Register(ctx);
+                var (code, msg) = path == "/login" ? await Login(ctx) : await Register(ctx);
                 var rb = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { ok = code == 200, message = msg }));
                 ctx.Response.StatusCode = code; ctx.Response.ContentType = "application/json";
                 await ctx.Response.OutputStream.WriteAsync(rb); ctx.Response.Close();
@@ -173,7 +190,8 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
                 _ => new
                 {
                     name = s.ServerName, ip = s.PublicIp, port = s.LoginPort, gamePort = s.GamePort, streamPort = 1250, news = s.News,
-                    clientUrl = s.ClientDownloadUrl, launchArgs = s.LaunchArgs, live = liveStatus()
+                    clientUrl = s.ClientDownloadUrl, launchArgs = s.LaunchArgs, live = liveStatus(),
+                    maintenance = s.Maintenance, maintenanceMessage = s.MaintenanceMessage, registration = s.AllowRegistration && !s.Maintenance
                 }
             };
             var b = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(body));

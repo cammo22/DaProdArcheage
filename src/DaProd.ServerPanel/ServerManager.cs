@@ -49,7 +49,7 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
             }
         }
         WriteConfigs();
-        log("panel", "Setup completato ✔");
+        log("panel", "Setup completato.");
     }
 
     public void WriteConfigs()

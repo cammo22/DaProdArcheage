@@ -19,7 +19,14 @@ Copy-Item "$AAEmu\SQL\*" "$srv\server\sql" -Recurse -Force
 # database statico del gioco richiesto dal Game server
 $compact = Join-Path $root "..\Multilingual compact.sqlite3\compact.sqlite3"
 New-Item -ItemType Directory -Force "$srv\server\bin\game\Data" | Out-Null
-if (Test-Path $compact) { Copy-Item $compact "$srv\server\bin\game\Data\compact.sqlite3" -Force }
+$decrypted = Join-Path $root "..\game_decrypted.sqlite3\game_decrypted.sqlite3"
+if (Test-Path $compact) {
+    Copy-Item $compact "$srv\server\bin\game\Data\compact.sqlite3" -Force
+    # completa i dati mancanti del compact multilingue (altrimenti il Game server non parte)
+    if ((Test-Path $decrypted) -and (Get-Command python -ErrorAction SilentlyContinue)) {
+        python "$root\tools\repair-compact.py" "$srv\server\bin\game\Data\compact.sqlite3" $decrypted
+    }
+}
 else { Write-Warning "compact.sqlite3 non trovato: copialo in $srv\server\bin\game\Data" }
 
 Write-Host "Fatto. Server: $srv\DaProdServer.exe  Launcher: $dist\DaProdLauncher\DaProdLauncher.exe"

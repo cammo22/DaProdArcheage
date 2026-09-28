@@ -25,11 +25,11 @@ public static class Live
         var names = TailscalePeers();
         var t = new DataTable();
         t.Columns.Add("Chi"); t.Columns.Add("IP"); t.Columns.Add("Stato");
-        foreach (var (port, what) in new[] { (s.GamePort, "🎮 In gioco"), (s.LoginPort, "🔑 Al login"), (s.LauncherApiPort, "🚀 Launcher/download") })
+        foreach (var (port, what) in new[] { (s.GamePort, "In gioco"), (s.LoginPort, "Al login"), (s.LauncherApiPort, "Launcher / download") })
             foreach (var ip in Conns(port).Select(c => c.RemoteEndPoint.Address.ToString()).Distinct())
                 t.Rows.Add(names.GetValueOrDefault(ip, ip), ip, what);
         foreach (var (ip, name) in names)
-            t.Rows.Add(name, ip, "🟢 Tailscale online");
+            t.Rows.Add(name, ip, "Online (Tailscale)");
         return t;
     }
 

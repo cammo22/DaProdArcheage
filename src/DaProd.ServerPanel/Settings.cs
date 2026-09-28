@@ -11,7 +11,7 @@ public sealed class PanelSettings
     public int MySqlPort { get; set; } = 3306;
     public string GamePakDir { get; set; } = "";
     /// <summary>Cartella del client estratto: viene servita ai launcher e usata per trovare game_pak.</summary>
-    public string ClientDir { get; set; } = @"Z:\Archeage\Client";
+    public string ClientDir { get; set; } = Path.Combine(AppContext.BaseDirectory, "gioco");
     /// <summary>Se attivo, PublicIp viene preso automaticamente da "tailscale ip -4".</summary>
     public bool UseTailscale { get; set; } = true;
     /// <summary>Auth key Tailscale (riutilizzabile, ephemeral) inclusa nel pacchetto per gli amici.</summary>
@@ -22,6 +22,9 @@ public sealed class PanelSettings
     public bool AutoAccount { get; set; } = false;
     /// <summary>Permette agli utenti di creare l'account dal launcher.</summary>
     public bool AllowRegistration { get; set; } = true;
+    /// <summary>Manutenzione: Login e Game spenti, il launcher mostra il messaggio e non fa entrare.</summary>
+    public bool Maintenance { get; set; }
+    public string MaintenanceMessage { get; set; } = "Server in manutenzione, torniamo presto!";
     /// <summary>All'apertura del pannello: setup (se serve) e avvio automatico del server.</summary>
     public bool AutoStart { get; set; } = true;
     public string ClientDownloadUrl { get; set; } = "";
