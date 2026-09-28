@@ -62,7 +62,7 @@ public static class Updater
         File.WriteAllText(script,
             "@echo off\r\n" +
             $"timeout /t 3 /nobreak >nul\r\n" +
-            $"robocopy \"{files}\" \"{root}\" /E /XD data gioco mysql-data logs /XF compact.sqlite3 game_decrypted.sqlite3 Config.Local.json >nul\r\n" +
+            $"robocopy \"{files}\" \"{root}\" /E /XD data gioco zoneclient mysql-data logs /XF compact.sqlite3 game_decrypted.sqlite3 Config.Local.json >nul\r\n" +
             $"start \"\" \"{Path.Combine(root, "DaProdServer.exe")}\"\r\n");
         Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{script}\"") { WindowStyle = ProcessWindowStyle.Hidden, CreateNoWindow = true });
     }

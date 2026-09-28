@@ -25,6 +25,9 @@ New-Item -ItemType Directory -Force "$srv\server\zonehost", "$srv\server\sql", "
 Copy-Item "$root\..\AAEmu.ZoneHost.exe\AAEmu.ZoneHost.exe", "$root\..\AAEmu.ZoneHost.exe\x2game-dev_dedicate.dll" "$srv\server\zonehost" -Force
 Copy-Item "$AAEmu\SQL\*" "$srv\server\sql" -Recurse -Force
 
+# estrattore di game_pak (AAPacker): il pannello lo usa per preparare server\zoneclient
+dotnet build "$root\tools\PakExtract\PakExtract.csproj" -c Release -o "$srv\server\tools\PakExtract"
+
 # Database: come da guida, compact.sqlite3 del server = copia di game_decrypted.sqlite3
 $decrypted = Join-Path $root "..\game_decrypted.sqlite3\game_decrypted.sqlite3"
 foreach ($d in "$srv\server\bin\game\Data\compact.sqlite3", "$srv\server\bin\world\Data\compact.sqlite3", "$srv\server\zonehost\game_decrypted.sqlite3") {

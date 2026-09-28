@@ -19,7 +19,12 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
     static string SqlDir => Path.Combine(ServerDir, "sql");
     static string WorldDir => Path.Combine(ServerDir, "bin", "world");
     static string ZoneFiles => Path.Combine(ServerDir, "zonehost");
-    string Bin64 => Path.Combine(s.ClientDir, "Bin64");
+    /// <summary>
+    /// Copia del client solo per il server di zona: Bin64 + game_pak estratto in game\.
+    /// Il client in gioco\ resta intatto per i launcher degli amici.
+    /// </summary>
+    static string ZoneClient => Path.Combine(ServerDir, "zoneclient");
+    static string Bin64 => Path.Combine(ZoneClient, "Bin64");
 
     /// <summary>Quando è stato avviato ogni processo (per capire se è ancora "in caricamento").</summary>
     public DateTime? StartedAt(string name) => _procs.TryGetValue(name, out var p) && !p.HasExited ? p.StartTime : null;
@@ -28,17 +33,43 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
     readonly HashSet<string> _stopping = [];
 
     /// <summary>Copia nel client i file del server di zona (ZoneHost, dll, database).</summary>
-    void PrepareZoneHost()
+    async Task PrepareZoneHostAsync()
     {
-        if (!Directory.Exists(Bin64)) { log("zone", $"Client non trovato in {s.ClientDir}"); return; }
+        var clientBin = Path.Combine(s.ClientDir, "Bin64");
+        if (!Directory.Exists(clientBin)) { log("zone", $"Client non trovato in {s.ClientDir}"); return; }
+        if (!Directory.Exists(Bin64))
+        {
+            log("zone", "Copio Bin64 del client per il server di zona...");
+            await Task.Run(() => CopyDir(clientBin, Bin64));
+        }
+        // prima volta: estraggo game_pak (lungo, ma una volta sola; riprende se interrotto)
+        var pak = Path.Combine(s.ClientDir, "game_pak");
+        var extractor = Path.Combine(ServerDir, "tools", "PakExtract", "PakExtract.exe");
+        if (!File.Exists(Path.Combine(ZoneClient, "game", ".estratto")) && File.Exists(pak) && File.Exists(extractor))
+        {
+            log("zone", "Estraggo game_pak per il server di zona: può richiedere 20-60 minuti la prima volta...");
+            await RunToEndAsync(extractor, $"\"{pak}\" \"{ZoneClient}\"", "zone");
+            File.WriteAllText(Path.Combine(ZoneClient, "game", ".estratto"), DateTime.Now.ToString("s"));
+        }
         foreach (var f in new[] { "AAEmu.ZoneHost.exe", "x2game-dev_dedicate.dll" })
         {
             var src = Path.Combine(ZoneFiles, f); var dst = Path.Combine(Bin64, f);
             if (File.Exists(src) && (!File.Exists(dst) || new FileInfo(dst).Length != new FileInfo(src).Length)) File.Copy(src, dst, true);
         }
-        var db = Path.Combine(s.ClientDir, "game", "db", "game_decrypted.sqlite3");
+        var db = Path.Combine(ZoneClient, "game", "db", "game_decrypted.sqlite3");
         var dbSrc = Path.Combine(ZoneFiles, "game_decrypted.sqlite3");
-        if (!File.Exists(db) && File.Exists(dbSrc)) { Directory.CreateDirectory(Path.GetDirectoryName(db)!); File.Copy(dbSrc, db); }
+        if (File.Exists(dbSrc) && (!File.Exists(db) || new FileInfo(db).Length != new FileInfo(dbSrc).Length))
+        { Directory.CreateDirectory(Path.GetDirectoryName(db)!); File.Copy(dbSrc, db, true); }
+    }
+
+    static void CopyDir(string from, string to)
+    {
+        foreach (var f in Directory.GetFiles(from, "*", SearchOption.AllDirectories))
+        {
+            var dst = Path.Combine(to, Path.GetRelativePath(from, f));
+            Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+            File.Copy(f, dst, true);
+        }
     }
 
     public string ConnString(string db = "") =>
@@ -109,7 +140,7 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         var world = new JsonObject
         {
             ["GameContentRoot"] = GameDir,
-            ["ZoneGameDataRoot"] = Path.Combine(s.ClientDir, "game"),
+            ["ZoneGameDataRoot"] = Path.Combine(ZoneClient, "game"),
             ["PublicNetwork"] = new JsonObject { ["Host"] = s.UseTailscale ? "127.0.0.1" : s.PublicIp, ["Port"] = s.GamePort },
             ["ZoneHost"] = new JsonObject
             {
@@ -148,7 +179,7 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
     {
         await StartMySqlAsync();
         WriteConfigs();
-        PrepareZoneHost();
+        await PrepareZoneHostAsync();
         if (!IsRunning("login")) Start("login", Path.Combine(LoginDir, "AAEmu.Login.exe"), "", LoginDir);
         await Task.Delay(2000);
         // "game" = AAEmu.World (contiene la logica di gioco)
