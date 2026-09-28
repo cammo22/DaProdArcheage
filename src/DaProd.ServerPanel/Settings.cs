@@ -19,7 +19,9 @@ public sealed class PanelSettings
     public int LoginPort { get; set; } = 1237;
     public int GamePort { get; set; } = 1239;
     public int LauncherApiPort { get; set; } = 8080;
-    public bool AutoAccount { get; set; } = true;
+    public bool AutoAccount { get; set; } = false;
+    /// <summary>Permette agli utenti di creare l'account dal launcher.</summary>
+    public bool AllowRegistration { get; set; } = true;
     /// <summary>All'apertura del pannello: setup (se serve) e avvio automatico del server.</summary>
     public bool AutoStart { get; set; } = true;
     public string ClientDownloadUrl { get; set; } = "";

@@ -68,7 +68,8 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
             ["Connections"] = new JsonObject { ["MySQLProvider"] = Db("aaemu_login") },
             ["GameServers"] = new JsonArray(new JsonObject
             {
-                ["ID"] = 1, ["Name"] = s.ServerName, ["Host"] = s.PublicIp, ["Port"] = s.GamePort
+                // Con Tailscale il launcher inoltra le porte su 127.0.0.1, quindi il client deve andare a localhost
+                ["ID"] = 1, ["Name"] = s.ServerName, ["Host"] = s.UseTailscale ? "127.0.0.1" : s.PublicIp, ["Port"] = s.GamePort
             })
         };
         var game = new JsonObject

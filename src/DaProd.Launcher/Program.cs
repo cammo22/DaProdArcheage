@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Drawing;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -40,20 +40,20 @@ public sealed class LauncherSettings
 }
 
 public sealed record Live(bool online, int players, string time);
-public sealed record ServerInfo(string name, string ip, int port, string news, string clientUrl, string launchArgs, Live? live);
+public sealed record ServerInfo(string name, string ip, int port, string news, string clientUrl, string launchArgs, Live? live, int? gamePort = null, int? streamPort = null);
 public sealed record ManifestFile(string path, long size, long time);
 
 public sealed class LauncherForm : Form
 {
-    const string TailscaleExe = @"C:\Program Files\Tailscale\tailscale.exe";
     readonly LauncherSettings _s = LauncherSettings.Load();
-    readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(8) };
-    readonly HttpClient _dl = new() { Timeout = Timeout.InfiniteTimeSpan };
+    HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(8) };
+    HttpClient _dl = new() { Timeout = Timeout.InfiniteTimeSpan };
+    TailscaleTunnel? _tunnel;
     ServerInfo? _info;
     bool _busy, _ready;
 
     readonly Label _title = new() { AutoSize = true, Font = new Font("Segoe UI", 20, FontStyle.Bold), ForeColor = Color.Gold, Text = "DaProd ArcheAge" };
-    readonly Label _live = new() { AutoSize = true, Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = Color.Orange, Text = "⏳ Connessione..." };
+    readonly Label _live = new() { AutoSize = true, Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = Color.Orange, Text = "â³ Connessione..." };
     readonly Label _news = new() { Width = 640, Height = 130, ForeColor = Color.White, Font = new Font("Segoe UI", 11) };
     readonly TextBox _user = new() { Width = 200 };
     readonly TextBox _pass = new() { Width = 200, UseSystemPasswordChar = true };
@@ -70,18 +70,19 @@ public sealed class LauncherForm : Form
         BackColor = Color.FromArgb(24, 26, 34); Font = new Font("Segoe UI", 10);
 
         _user.Text = _s.Username;
-        _play = Btn("▶ GIOCA", Play, 200, Color.SeaGreen);
+        _play = Btn("â–¶ GIOCA", Play, 200, Color.SeaGreen);
         _play.Enabled = false;
         var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(28), WrapContents = false };
         flow.Controls.Add(_title);
         flow.Controls.Add(_live);
         flow.Controls.Add(_news);
         flow.Controls.Add(Row(L("Utente:"), _user, L("Password:"), _pass));
-        flow.Controls.Add(Row(_play, Btn("⚙ Server", ChangeServer, 110), Btn("📁 Cartella", () => { Process.Start("explorer.exe", _s.GameDir); return Task.CompletedTask; }, 110)));
+        flow.Controls.Add(Row(_play, Btn("âš™ Server", ChangeServer, 110), Btn("ðŸ“ Cartella", () => { Process.Start("explorer.exe", _s.GameDir); return Task.CompletedTask; }, 110)));
         flow.Controls.Add(_bar); flow.Controls.Add(_state);
         Controls.Add(flow);
 
         Shown += async (_, _) => await Prepare();
+        FormClosed += (_, _) => _tunnel?.Dispose();
         var t = new System.Windows.Forms.Timer { Interval = 5000 };
         t.Tick += async (_, _) => { if (!_busy) await RefreshLive(); };
         t.Start();
@@ -97,7 +98,7 @@ public sealed class LauncherForm : Form
         return b;
     }
 
-    /// <summary>Tutto automatico: rete Tailscale → server → download/aggiornamento gioco.</summary>
+    /// <summary>Tutto automatico: rete Tailscale â†’ server â†’ download/aggiornamento gioco.</summary>
     async Task Prepare()
     {
         _busy = true;
@@ -114,23 +115,14 @@ public sealed class LauncherForm : Form
 
     async Task EnsureTailscale()
     {
-        if (string.IsNullOrWhiteSpace(_s.TailscaleAuthKey)) return;
-        if (!File.Exists(TailscaleExe))
-        {
-            _state.Text = "Installo Tailscale (serve per collegarsi al server via internet)...";
-            var setup = Path.Combine(Path.GetTempPath(), "tailscale-setup.exe");
-            await File.WriteAllBytesAsync(setup, await _dl.GetByteArrayAsync("https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"));
-            await Process.Start(new ProcessStartInfo(setup, "/quiet") { UseShellExecute = true, Verb = "runas" })!.WaitForExitAsync();
-            for (var i = 0; i < 20 && !File.Exists(TailscaleExe); i++) await Task.Delay(1000);
-        }
-        // già collegato alla rete del server? allora non tocco niente
-        if (await CanReach()) return;
-        _state.Text = "Mi collego alla rete del server (Tailscale)...";
-        var p = Process.Start(new ProcessStartInfo(TailscaleExe, $"up --auth-key={_s.TailscaleAuthKey} --unattended")
-        { UseShellExecute = false, CreateNoWindow = true })!;
-        await p.WaitForExitAsync();
+        var serverIp = new Uri(_s.ServerUrl).Host;
+        if (_tunnel != null || string.IsNullOrWhiteSpace(_s.TailscaleAuthKey) || !TailscaleTunnel.Available || TailscaleTunnel.IsLocal(serverIp)) return;
+        _tunnel = new TailscaleTunnel();
+        await _tunnel.StartAsync(_s.TailscaleAuthKey, t => _state.Text = t);
+        // da ora tutto il traffico verso il server passa dalla rete privata
+        _http = new HttpClient(new HttpClientHandler { Proxy = TailscaleTunnel.Proxy, UseProxy = true }) { Timeout = TimeSpan.FromSeconds(15) };
+        _dl = new HttpClient(new HttpClientHandler { Proxy = TailscaleTunnel.Proxy, UseProxy = true }) { Timeout = Timeout.InfiniteTimeSpan };
     }
-
     async Task<bool> CanReach()
     {
         try { await _http.GetStringAsync(_s.ServerUrl.TrimEnd('/') + "/launcher.json"); return true; } catch { return false; }
@@ -144,15 +136,15 @@ public sealed class LauncherForm : Form
             _title.Text = _info!.name; _news.Text = _info.news;
             var l = _info.live;
             _live.ForeColor = l?.online == true ? Color.LimeGreen : Color.Orange;
-            _live.Text = l == null ? "🟢 Server raggiungibile"
-                : l.online ? $"🟢 Server ONLINE · {l.players} giocatori in gioco · {l.time}"
-                : $"🟠 Server raggiungibile ma il gioco è spento · {l.time}";
+            _live.Text = l == null ? "ðŸŸ¢ Server raggiungibile"
+                : l.online ? $"ðŸŸ¢ Server ONLINE Â· {l.players} giocatori in gioco Â· {l.time}"
+                : $"ðŸŸ  Server raggiungibile ma il gioco Ã¨ spento Â· {l.time}";
             if (!_ready && !_busy) _ = Prepare();
             return true;
         }
         catch
         {
-            _live.ForeColor = Color.IndianRed; _live.Text = "🔴 Server OFFLINE";
+            _live.ForeColor = Color.IndianRed; _live.Text = "ðŸ”´ Server OFFLINE";
             return false;
         }
     }
@@ -181,14 +173,14 @@ public sealed class LauncherForm : Form
                     await dst.WriteAsync(buf.AsMemory(0, n)); done += n;
                     var mbps = done / 1048576.0 / Math.Max(1, sw.Elapsed.TotalSeconds);
                     _bar.Value = (int)(done * 100 / Math.Max(1, total));
-                    _state.Text = $"Download {done >> 20} / {total >> 20} MB · {mbps:F1} MB/s · {f.path}";
+                    _state.Text = $"Download {done >> 20} / {total >> 20} MB Â· {mbps:F1} MB/s Â· {f.path}";
                 }
             }
             File.Move(dest + ".part", dest, true);
         }
         _bar.Value = 100;
         _ready = true; _play.Enabled = true;
-        _state.Text = "Gioco pronto ✔ Inserisci utente e password e premi GIOCA.";
+        _state.Text = "Gioco pronto âœ” Inserisci utente e password e premi GIOCA.";
     }
 
     async Task Play()
@@ -198,13 +190,29 @@ public sealed class LauncherForm : Form
         var exe = Directory.Exists(_s.GameDir)
             ? Directory.EnumerateFiles(_s.GameDir, "archeage.exe", SearchOption.AllDirectories).OrderBy(p => p.Contains("Bin32") ? 1 : 0).FirstOrDefault()
             : null;
-        if (exe == null) { _state.Text = "archeage.exe non trovato: il download non è completo."; return; }
+        if (exe == null) { _state.Text = "archeage.exe non trovato: il download non Ã¨ completo."; return; }
         var hash = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(_pass.Text)));
-        var args = _info!.launchArgs.Replace("{ip}", _info.ip).Replace("{port}", _info.port.ToString())
+        var ip = _info!.ip;
+        if (_tunnel != null)
+        {
+            // il client si collega a localhost, il tunnel porta tutto al server
+            _tunnel.Forward(ip, _info.port, _info.gamePort ?? 1239, _info.streamPort ?? 1250);
+            ip = "127.0.0.1";
+        }
+        var args = _info.launchArgs.Replace("{ip}", ip).Replace("{port}", _info.port.ToString())
             .Replace("{user}", _user.Text).Replace("{token}", _pass.Text).Replace("{pwhash}", hash);
         Process.Start(new ProcessStartInfo(exe, args) { WorkingDirectory = Path.GetDirectoryName(exe)! });
         _s.Username = _user.Text; _s.Save();
         _state.Text = "Gioco avviato. Buon divertimento!";
+    }
+
+    async Task Register()
+    {
+        if (string.IsNullOrWhiteSpace(_user.Text) || _pass.Text.Length < 6) { _state.Text = "Scegli un nome utente e una password (almeno 6 caratteri), poi premi Crea account."; return; }
+        var resp = await _http.PostAsJsonAsync(_s.ServerUrl.TrimEnd('/') + "/register", new { user = _user.Text.Trim(), password = _pass.Text });
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        _state.Text = (resp.IsSuccessStatusCode ? "✔ " : "✖ ") + doc.RootElement.GetProperty("message").GetString();
+        if (resp.IsSuccessStatusCode) { _s.Username = _user.Text.Trim(); _s.Save(); }
     }
 
     Task ChangeServer()
@@ -224,9 +232,11 @@ static class Program
     static void Main()
     {
         ApplicationConfiguration.Initialize();
-        // Mai più finestre di "eccezione non gestita": gli errori finiscono nella riga di stato.
+        // Mai piÃ¹ finestre di "eccezione non gestita": gli errori finiscono nella riga di stato.
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) => MessageBox.Show(e.Exception.Message, "DaProd Launcher");
         Application.Run(new LauncherForm());
     }
 }
+
+

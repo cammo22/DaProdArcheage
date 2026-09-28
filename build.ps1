@@ -16,4 +16,10 @@ dotnet publish "$AAEmu\AAEmu.Game\AAEmu.Game.csproj"   -c Release -o "$srv\serve
 New-Item -ItemType Directory -Force "$srv\server\sql" | Out-Null
 Copy-Item "$AAEmu\SQL\*" "$srv\server\sql" -Recurse -Force
 
+# database statico del gioco richiesto dal Game server
+$compact = Join-Path $root "..\Multilingual compact.sqlite3\compact.sqlite3"
+New-Item -ItemType Directory -Force "$srv\server\bin\game\Data" | Out-Null
+if (Test-Path $compact) { Copy-Item $compact "$srv\server\bin\game\Data\compact.sqlite3" -Force }
+else { Write-Warning "compact.sqlite3 non trovato: copialo in $srv\server\bin\game\Data" }
+
 Write-Host "Fatto. Server: $srv\DaProdServer.exe  Launcher: $dist\DaProdLauncher\DaProdLauncher.exe"

@@ -35,7 +35,7 @@ public sealed class MainForm : Form
         tabs.TabPages.Add(SettingsTab());
         Controls.Add(tabs);
 
-        _api = new LauncherApi(_s, Log, () => Live.Snapshot(_s, _srv));
+        _api = new LauncherApi(_s, Log, () => Live.Snapshot(_s, _srv), _srv);
         _api.Start();
         var t = new System.Windows.Forms.Timer { Interval = 1500 };
         t.Tick += (_, _) => UpdateStatus();

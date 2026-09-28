@@ -70,6 +70,14 @@ public static class FriendPackage
         var dir = Path.Combine(PanelSettings.Root, "PacchettoAmici");
         Directory.CreateDirectory(dir);
         File.Copy(launcher, Path.Combine(dir, "DaProdLauncher.exe"), true);
+        // Tailscale portatile (open source, BSD-3): gli amici non installano nulla e non usano email
+        var tsSrc = Path.GetDirectoryName(PanelSettings.TailscaleExe)!;
+        if (s.UseTailscale && File.Exists(Path.Combine(tsSrc, "tailscaled.exe")))
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "tailscale"));
+            foreach (var f in new[] { "tailscale.exe", "tailscaled.exe" })
+                File.Copy(Path.Combine(tsSrc, f), Path.Combine(dir, "tailscale", f), true);
+        }
         File.WriteAllText(Path.Combine(dir, "server.json"), JsonSerializer.Serialize(new
         {
             api = $"http://{s.PublicIp}:{s.LauncherApiPort}",
