@@ -21,6 +21,8 @@ $zip = Join-Path $dist "DaProdServer.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive "$stage\*" $zip
 
+# git scrive avvisi su stderr: non devono fermare lo script
+$ErrorActionPreference = "Continue"
 git -C $root add -A
 git -C $root commit -m "Release $Version" | Out-Null
 git -C $root push

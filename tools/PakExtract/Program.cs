@@ -2,7 +2,20 @@
 // Uso:  PakExtract <game_pak> <cartella_destinazione> [--list filtro]
 using AAPacker;
 
-if (args.Length < 2) { Console.WriteLine("Uso: PakExtract <game_pak> <destinazione> [--list filtro]"); return 1; }
+if (args.Length < 2) { Console.WriteLine("Uso: PakExtract <game_pak> <destinazione> [--list filtro]  |  PakExtract <game_pak> --replace <percorso/nel/pak> <file>"); return 1; }
+
+// sostituisce un file dentro il pak (es. game/db/compact.sqlite3 con i testi inglesi)
+if (args.Length >= 4 && args[1] == "--replace")
+{
+    var rw = new AAPak(args[0], false);
+    if (!rw.IsOpen) { Console.WriteLine("Impossibile aprire in scrittura " + args[0]); return 2; }
+    using (var fs = File.OpenRead(args[3]))
+        if (!rw.AddFileFromStream(args[2], fs, DateTime.Now, DateTime.Now, false, out _)) { Console.WriteLine("Sostituzione fallita"); return 3; }
+    rw.ClosePak();
+    Console.WriteLine("SOSTITUITO " + args[2]);
+    return 0;
+}
+
 var pak = new AAPak(args[0], true);
 if (!pak.IsOpen) { Console.WriteLine("Impossibile aprire " + args[0]); return 2; }
 Console.WriteLine($"File nel pak: {pak.Files.Count}");
