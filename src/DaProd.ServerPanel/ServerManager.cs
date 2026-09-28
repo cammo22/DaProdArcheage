@@ -241,6 +241,29 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
                 ["AAEMU_ZONE_SAVE_DIR"] = logDir,
                 ["AAEMU_ZONE_LOG_NAME"] = z
             });
+            _ = HideWindowsAsync(Proc("zone:" + z));
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+
+    /// <summary>Lo Zone Host apre finestre (console e "Gweonid"): per 3 minuti le nascondo appena compaiono.</summary>
+    static async Task HideWindowsAsync(Process? p)
+    {
+        if (p == null) return;
+        for (var i = 0; i < 180 && !p.HasExited; i++)
+        {
+            EnumWindows((h, _) =>
+            {
+                GetWindowThreadProcessId(h, out var pid);
+                if (pid == p.Id && IsWindowVisible(h)) ShowWindow(h, 0);
+                return true;
+            }, IntPtr.Zero);
+            await Task.Delay(1000);
         }
     }
 

@@ -35,7 +35,7 @@ public sealed class PanelSettings
     public bool AutoStart { get; set; } = true;
     public string ClientDownloadUrl { get; set; } = "";
     /// <summary>Parametri CryEngine del client: indirizzo del Login; il login si fa nella schermata del gioco.</summary>
-    public string LaunchArgs { get; set; } = "+auth_serveraddr {ip} +auth_serverport {port} +locale en_us";
+    public string LaunchArgs { get; set; } = "+auth_ip {ip} +auth_port {port} +auth_serveraddr {ip} +auth_serverport {port} +locale en_us";
     public string News { get; set; } = "Benvenuti sul server DaProd ArcheAge!";
 
     static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
