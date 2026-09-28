@@ -174,6 +174,17 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
                 await ctx.Response.OutputStream.WriteAsync(rb); ctx.Response.Close();
                 return;
             }
+            // aggiornamento del launcher degli amici: lo prendono dal pannello, non da GitHub
+            var launcherExe = Path.Combine(PanelSettings.Root, "launcher", "DaProdLauncher.exe");
+            if (path == "/launcher.exe" && File.Exists(launcherExe))
+            {
+                await using var lf = File.OpenRead(launcherExe);
+                ctx.Response.ContentType = "application/octet-stream";
+                ctx.Response.ContentLength64 = lf.Length;
+                await lf.CopyToAsync(ctx.Response.OutputStream);
+                ctx.Response.Close();
+                return;
+            }
             if (path.StartsWith("/files/"))
             {
                 var rel = path["/files/".Length..];
@@ -195,7 +206,8 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
                 {
                     name = s.ServerName, ip = s.PublicIp, port = s.LoginPort, gamePort = s.GamePort, streamPort = 1250, news = s.News,
                     clientUrl = s.ClientDownloadUrl, launchArgs = s.LaunchArgs, live = liveStatus(),
-                    maintenance = s.Maintenance, maintenanceMessage = s.MaintenanceMessage, registration = s.AllowRegistration && !s.Maintenance
+                    maintenance = s.Maintenance, maintenanceMessage = s.MaintenanceMessage, registration = s.AllowRegistration && !s.Maintenance,
+                    launcherVersion = File.Exists(launcherExe) ? System.Diagnostics.FileVersionInfo.GetVersionInfo(launcherExe).FileVersion : null
                 }
             };
             var b = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(body));

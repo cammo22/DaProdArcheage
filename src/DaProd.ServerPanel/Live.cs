@@ -13,9 +13,12 @@ public static class Live
         IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections()
             .Where(c => c.LocalEndPoint.Port == port && c.State == TcpState.Established);
 
-    public static object Snapshot(PanelSettings s, ServerManager srv) => new
+    public static object Snapshot(PanelSettings s, ServerManager srv, HealthReport? h) => new
     {
         online = srv.IsRunning("login") && srv.IsRunning("game"),
+        // "ready" = tutto operativo (anche le mappe): solo allora il launcher fa giocare
+        ready = h?.Overall == HealthState.Operativo,
+        status = h?.Headline ?? "In avvio",
         players = Conns(s.GamePort).Select(c => c.RemoteEndPoint.Address.ToString()).Distinct().Count(),
         time = DateTime.Now.ToString("HH:mm:ss")
     };

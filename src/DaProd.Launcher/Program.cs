@@ -60,9 +60,10 @@ public sealed class LauncherSettings
     public static void SaveInstalled(Dictionary<string, ManifestFile> m) { Directory.CreateDirectory(Dir); File.WriteAllText(InstalledPath, JsonSerializer.Serialize(m)); }
 }
 
-public sealed record Live(bool online, int players, string time);
+public sealed record Live(bool online, int players, string time, bool ready = false, string? status = null);
 public sealed record ServerInfo(string name, string ip, int port, string news, string clientUrl, string launchArgs, Live? live,
-    int? gamePort = null, int? streamPort = null, bool maintenance = false, string? maintenanceMessage = null, bool registration = true);
+    int? gamePort = null, int? streamPort = null, bool maintenance = false, string? maintenanceMessage = null, bool registration = true,
+    string? launcherVersion = null);
 public sealed record ManifestFile(string path, long size, long time);
 
 static class Theme
@@ -97,7 +98,8 @@ public sealed class LauncherForm : Form
     readonly Label _update = new() { AutoSize = true, ForeColor = Theme.Muted, Text = "" };
     readonly ProgressBar _bar = new() { Dock = DockStyle.Fill };
     readonly Label _state = new() { Dock = DockStyle.Fill, ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft };
-    readonly Button _play, _register;
+    readonly Button _play, _register, _selfUpdate;
+    bool _ready;
 
     public LauncherForm()
     {
@@ -131,6 +133,9 @@ public sealed class LauncherForm : Form
         _register = Btn("Registrati", Theme.Blue, 230, 38, 10);
         _play.Click += async (_, _) => await Run(_play, Play);
         _register.Click += async (_, _) => await Run(_register, Register);
+        _selfUpdate = Btn("Aggiorna launcher", Theme.Orange, 230, 34, 10);
+        _selfUpdate.Visible = false;
+        _selfUpdate.Click += async (_, _) => await Run(_selfUpdate, SelfUpdate);
         var server = new LinkLabel { Text = "Cambia server", AutoSize = true, LinkColor = Theme.Muted, Margin = new Padding(3, 10, 0, 0) };
         server.Click += (_, _) => ChangeServer();
         var folder = new LinkLabel { Text = "Apri cartella di gioco", AutoSize = true, LinkColor = Theme.Muted, Margin = new Padding(3, 4, 0, 0) };
@@ -139,7 +144,7 @@ public sealed class LauncherForm : Form
             new Label { Text = "ACCEDI", AutoSize = true, ForeColor = Theme.Gold, Font = new Font("Segoe UI Semibold", 10), Margin = new Padding(3, 0, 0, 10) },
             new Label { Text = "Utente", AutoSize = true, ForeColor = Theme.Muted }, _user,
             new Label { Text = "Password", AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(3, 8, 0, 0) }, _pass,
-            _remember, new Panel { Height = 6, Width = 1 }, _play, _register, _update, server, folder
+            _remember, new Panel { Height = 6, Width = 1 }, _play, _register, _selfUpdate, _update, server, folder
         ]);
         body.Controls.Add(newsCard); body.Controls.Add(new Panel { Dock = DockStyle.Right, Width = 16 }); body.Controls.Add(login);
 
@@ -171,7 +176,7 @@ public sealed class LauncherForm : Form
         _busy = true; _play.Enabled = _register.Enabled = false;
         try { await action(); }
         catch (Exception ex) { _state.Text = "Errore: " + ex.Message; }
-        finally { _busy = false; _play.Enabled = _register.Enabled = true; }
+        finally { _busy = false; _register.Enabled = true; _play.Enabled = _ready; }
     }
 
     string Api(string path) => _s.ServerUrl.TrimEnd('/') + path;
@@ -209,22 +214,45 @@ public sealed class LauncherForm : Form
             var wasOffline = _info == null;
             _info = await _http.GetFromJsonAsync<ServerInfo>(Api("/launcher.json"));
             _title.Text = _info!.name;
-            _news.Text = _info.maintenance ? (_info.maintenanceMessage ?? "Manutenzione in corso.") + "\n\n" + _info.news : _info.news;
             var l = _info.live;
+            // si gioca solo quando il server è COMPLETAMENTE operativo (anche le mappe)
+            _ready = !_info.maintenance && l?.ready == true;
+            _news.Text =
+                _info.maintenance ? (_info.maintenanceMessage ?? "Manutenzione in corso.") + "\n\n" + _info.news :
+                !_ready ? "Il server si sta avviando, riprovo in automatico ogni 5 secondi...\n\n" + (l?.status ?? "") + "\n\n" + _info.news :
+                _info.news;
             (_live.Text, _live.BackColor) =
                 _info.maintenance ? ("IN MANUTENZIONE", Theme.Orange) :
-                l?.online == true ? ($"ONLINE  -  {l.players} in gioco", Theme.Green) :
-                ("SERVER AVVIATO, GIOCO SPENTO", Theme.Orange);
+                _ready ? ($"ONLINE  -  {l!.players} in gioco", Theme.Green) :
+                ("SERVER IN AVVIO...", Theme.Orange);
+            if (!_busy) { _play.Enabled = _ready; _play.Text = _ready ? "GIOCA" : "ATTENDI..."; }
             _register.Visible = _info.registration;
+            _selfUpdate.Visible = Version.TryParse(_info.launcherVersion, out var v) && v > MyVersion;
             if (wasOffline && !_busy) _ = CheckUpdates();
             return true;
         }
         catch
         {
-            _info = null;
-            (_live.Text, _live.BackColor) = ("OFFLINE", Theme.Red);
+            _info = null; _ready = false;
+            (_live.Text, _live.BackColor) = ("OFFLINE - riprovo...", Theme.Red);
+            if (!_busy) { _play.Enabled = false; _play.Text = "ATTENDI..."; }
             return false;
         }
+    }
+
+    static Version MyVersion => System.Reflection.Assembly.GetExecutingAssembly().GetName().Version ?? new(0, 0);
+
+    /// <summary>Scarica il launcher nuovo dal server e si sostituisce da solo.</summary>
+    async Task SelfUpdate()
+    {
+        _state.Text = "Scarico il nuovo launcher...";
+        var me = Environment.ProcessPath!;
+        var tmp = Path.Combine(Path.GetTempPath(), "DaProdLauncher.new.exe");
+        await File.WriteAllBytesAsync(tmp, await _dl.GetByteArrayAsync(Api("/launcher.exe")));
+        var cmd = Path.Combine(Path.GetTempPath(), "daprod-launcher-update.cmd");
+        File.WriteAllText(cmd, $"@echo off\r\ntimeout /t 2 /nobreak >nul\r\ncopy /y \"{tmp}\" \"{me}\" >nul\r\nstart \"\" \"{me}\"\r\n");
+        Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{cmd}\"") { CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
+        Application.Exit();
     }
 
     /// <summary>Confronta i file del server con quelli installati e mostra la dimensione della patch.</summary>
@@ -297,6 +325,7 @@ public sealed class LauncherForm : Form
     {
         if (_info == null && !await RefreshLive()) { _state.Text = "Server offline."; return; }
         if (_info!.maintenance) { _state.Text = _info.maintenanceMessage ?? "Server in manutenzione."; return; }
+        if (!_ready) { _state.Text = "Il server non è ancora pronto: attendi che diventi ONLINE."; return; }
         if (string.IsNullOrWhiteSpace(_user.Text) || string.IsNullOrWhiteSpace(_pass.Text)) { _state.Text = "Inserisci utente e password."; return; }
 
         _state.Text = "Verifico l'account...";

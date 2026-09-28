@@ -56,6 +56,7 @@ public sealed class MainForm : Form
     readonly List<Button> _nav = [];
     Button? _maintBtn;
     HealthMonitor? _health;
+    volatile HealthReport? _lastHealth;
     readonly Panel _card = new() { Dock = DockStyle.Top, Height = 150, Padding = new Padding(18, 12, 18, 12), BackColor = Color.DimGray };
     readonly Label _cardHead = new() { Dock = DockStyle.Top, Height = 34, Font = new Font("Segoe UI Semibold", 15), ForeColor = Color.White };
     readonly Label _cardAdvice = new() { Dock = DockStyle.Top, Height = 26, ForeColor = Color.White };
@@ -98,18 +99,19 @@ public sealed class MainForm : Form
         Controls.Add(_content); Controls.Add(_maintBanner); Controls.Add(header); Controls.Add(side);
         Show("Server");
 
-        _api = new LauncherApi(_s, Log, () => Live.Snapshot(_s, _srv), _srv);
+        _api = new LauncherApi(_s, Log, () => Live.Snapshot(_s, _srv, _lastHealth), _srv);
         _api.Start();
         var t = new System.Windows.Forms.Timer { Interval = 1500 };
         t.Tick += (_, _) => UpdateStatus();
         var ht = new System.Windows.Forms.Timer { Interval = 2000 };
-        ht.Tick += async (_, _) => { try { ShowHealth(await Task.Run(() => _health!.Check())); } catch { } };
+        ht.Tick += async (_, _) => { try { ShowHealth(_lastHealth = await Task.Run(() => _health!.Check())); } catch { } };
         ht.Start();
         t.Start();
         UpdateStatus();
 
         Shown += async (_, _) =>
         {
+            await EnsureGameData();
             if (!_s.AutoStart) return;
             try
             {
@@ -214,6 +216,30 @@ public sealed class MainForm : Form
         return p;
     }
 
+    /// <summary>Su un PC nuovo chiede il pacchetto dati del gioco (unica domanda del setup).</summary>
+    async Task EnsureGameData()
+    {
+        if (!GameDataPack.Missing(_s)) return;
+        MessageBox.Show("Mancano i dati del gioco su questo PC.\nSeleziona il file " + GameDataPack.FileName +
+                        " (creato col pulsante Pacchetto dati sul PC dove il server funziona).", "Primo avvio");
+        using var d = new OpenFileDialog { Filter = "Pacchetto dati|*.zip", Title = "Seleziona " + GameDataPack.FileName };
+        if (d.ShowDialog(this) != DialogResult.OK) { Log("panel", "Dati del gioco mancanti: il server non potrà caricare le mappe."); return; }
+        await GameDataPack.InstallAsync(_s, d.FileName, t => Log("dati", t));
+        _api?.ResetManifest();
+    }
+
+    async Task CheckUpdates()
+    {
+        Log("panel", $"Versione attuale {Updater.Current}. Controllo GitHub ({_s.GitHubRepo})...");
+        var upd = await Updater.CheckAsync(_s);
+        if (upd == null) { MessageBox.Show($"Hai già l'ultima versione ({Updater.Current}).", "Aggiornamenti"); return; }
+        if (MessageBox.Show($"Disponibile la versione {upd.Value.ver}. Aggiornare ora?\nIl server verrà fermato e il pannello si riaprirà da solo.",
+                "Aggiornamenti", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+        await Updater.InstallAsync(_s, upd.Value.assetApiUrl, t => Log("update", t));
+        _srv.StopAll();
+        Environment.Exit(0);
+    }
+
     async Task ToggleMaintenance()
     {
         if (!_s.Maintenance)
@@ -243,7 +269,8 @@ public sealed class MainForm : Form
         bar.Controls.Add(Btn("Riavvia", Theme.Blue, async () => { _srv.StopAll(); await Task.Delay(2000); await _srv.StartAllAsync(); }, 120));
         bar.Controls.Add(_maintBtn = Btn("Manutenzione", Theme.Orange, ToggleMaintenance, 170));
         bar.Controls.Add(Btn("Pacchetto amici", Theme.Purple, () => { FriendPackage.Create(_s, Log); return Task.CompletedTask; }, 170));
-        bar.Controls.Add(Btn("Ripeti setup", Theme.Card, _srv.FirstSetupAsync, 130));
+        bar.Controls.Add(Btn("Aggiornamenti", Theme.Blue, CheckUpdates, 150));
+        bar.Controls.Add(Btn("Pacchetto dati", Theme.Card, () => GameDataPack.CreateAsync(_s, t => Log("dati", t)), 140));
 
         var cmdBar = new Panel { Dock = DockStyle.Bottom, Height = 36, Padding = new Padding(0, 6, 0, 0) };
         var cmd = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Comando per la console del Game server (Invio per inviare)", BackColor = Theme.Card, ForeColor = Theme.Text, BorderStyle = BorderStyle.FixedSingle };

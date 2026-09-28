@@ -100,6 +100,7 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
             ["Network"] = new JsonObject { ["Host"] = "*", ["Port"] = s.GamePort },
             ["LoginNetwork"] = new JsonObject { ["Host"] = "127.0.0.1", ["Port"] = "1234" },
             ["Connections"] = new JsonObject { ["MySQLProvider"] = Db("aaemu_game") },
+            ["DebugInfo"] = false,
         };
         if (!string.IsNullOrWhiteSpace(s.GamePakDir))
             game["ClientData"] = new JsonObject { ["Sources"] = new JsonArray(s.GamePakDir) };
@@ -124,6 +125,7 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         File.WriteAllText(Path.Combine(LoginDir, "Config.Local.json"), login.ToJsonString(o));
         File.WriteAllText(Path.Combine(GameDir, "Config.Local.json"), game.ToJsonString(o));
         if (Directory.Exists(WorldDir)) File.WriteAllText(Path.Combine(WorldDir, "Config.Local.json"), world.ToJsonString(o));
+        foreach (var d in new[] { LoginDir, GameDir, WorldDir }) QuietLogs(d);
         log("panel", "Configurazioni scritte per Login, Game e World.");
     }
 
@@ -149,13 +151,57 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         PrepareZoneHost();
         if (!IsRunning("login")) Start("login", Path.Combine(LoginDir, "AAEmu.Login.exe"), "", LoginDir);
         await Task.Delay(2000);
-        // "game" = AAEmu.World (contiene la logica di gioco e avvia lo Zone Host)
+        // "game" = AAEmu.World (contiene la logica di gioco)
         if (!IsRunning("game")) Start("game", Path.Combine(WorldDir, "AAEmu.World.exe"), "", WorldDir);
+        _ = StartZonesWhenWorldReady();
+    }
+
+    /// <summary>
+    /// Le mappe del mondo aperto le carica AAEmu.ZoneHost (lo Zone Manager della guida):
+    /// appena il World ascolta sulla 1240 avvio un host per ogni zona in Impostazioni > Zones.
+    /// </summary>
+    async Task StartZonesWhenWorldReady()
+    {
+        for (var i = 0; i < 300 && !PortListening(1240); i++) await Task.Delay(1000);
+        if (!IsRunning("game")) return;
+        var exe = Path.Combine(Bin64, "AAEmu.ZoneHost.exe");
+        var zones = s.Zones.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var i = 0; i < zones.Length; i++)
+        {
+            var z = zones[i];
+            if (IsRunning("zone:" + z)) continue;
+            var logDir = Path.Combine(ServerDir, "logs", "zone", z);
+            Directory.CreateDirectory(logDir);
+            var args = $"-dedicated +world_ip 127.0.0.1 +world_port 1240 +world_serveraddr 127.0.0.1 +world_serverport 1240 " +
+                       $"+zone {z} +sv_map {z} +instance 0 +sv_port {65000 + i} +db_location game/db/game_decrypted.sqlite3 " +
+                       "+e_render 0 +r_Driver Null +npc_move_skip_standing 0 +npc_move_skip_disabledAI 0 +npc_movement_skip 0 +ai_systemupdate 1";
+            Start("zone:" + z, exe, args, Bin64, new()
+            {
+                ["AAEMU_ZONE_DLL"] = Path.Combine(Bin64, "x2game-dev_dedicate.dll"),
+                ["AAEMU_ZONE_SAVE_DIR"] = logDir,
+                ["AAEMU_ZONE_LOG_NAME"] = z
+            });
+        }
+    }
+
+    public IEnumerable<string> ZoneNames => _procs.Keys.Where(k => k.StartsWith("zone:")).ToList();
+
+    static bool PortListening(int port) =>
+        System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(e => e.Port == port);
+
+    /// <summary>Log a livello INFO: con TRACE il World scrive migliaia di righe al secondo e rallenta molto.</summary>
+    static void QuietLogs(string dir)
+    {
+        var f = Path.Combine(dir, "NLog.config");
+        if (!File.Exists(f)) return;
+        var t = File.ReadAllText(f);
+        var q = System.Text.RegularExpressions.Regex.Replace(t, "minlevel=\"(Trace|Debug)\"", "minlevel=\"Info\"", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (q != t) File.WriteAllText(f, q);
     }
 
     public void StopAll()
     {
-        foreach (var n in new[] { "game", "login", "mysql" }) Stop(n);
+        foreach (var n in ZoneNames.Concat(["game", "login", "mysql"])) Stop(n);
         foreach (var z in Process.GetProcessesByName("AAEmu.ZoneHost")) try { z.Kill(); } catch { }
     }
 
@@ -169,20 +215,22 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         log(name, "Fermato.");
     }
 
-    void Start(string name, string exe, string args, string cwd)
+    void Start(string name, string exe, string args, string cwd, Dictionary<string, string>? env = null)
     {
         if (!File.Exists(exe)) { log(name, $"File mancante: {exe}"); return; }
-        var p = new Process
+        var psi = new ProcessStartInfo(exe, args)
         {
-            StartInfo = new ProcessStartInfo(exe, args)
-            {
-                WorkingDirectory = cwd, UseShellExecute = false, CreateNoWindow = true,
-                RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true
-            },
-            EnableRaisingEvents = true
+            WorkingDirectory = cwd, UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+            // lo Zone Host è un programma nativo: con l'input rediretto si chiude subito
+            RedirectStandardInput = !name.StartsWith("zone:")
         };
-        p.OutputDataReceived += (_, e) => { if (e.Data != null) log(name, e.Data); };
-        p.ErrorDataReceived += (_, e) => { if (e.Data != null) log(name, e.Data); };
+        foreach (var (k, v) in env ?? []) psi.Environment[k] = v;
+        var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
+        // TRACE/DEBUG non vanno a schermo: intasano il pannello
+        void Out(string? l) { if (l != null && !l.Contains("[TRACE]") && !l.Contains("[DEBUG]")) log(name, l); }
+        p.OutputDataReceived += (_, e) => Out(e.Data);
+        p.ErrorDataReceived += (_, e) => Out(e.Data);
         p.Exited += (_, _) =>
         {
             if (_stopping.Contains(name)) return;

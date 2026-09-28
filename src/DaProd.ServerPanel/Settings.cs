@@ -24,6 +24,12 @@ public sealed class PanelSettings
     public bool AllowRegistration { get; set; } = true;
     /// <summary>Manutenzione: Login e Game spenti, il launcher mostra il messaggio e non fa entrare.</summary>
     public bool Maintenance { get; set; }
+    /// <summary>Zone del mondo aperto da caricare (separate da virgola). Ogni zona usa CPU e RAM.</summary>
+    public string Zones { get; set; } = "w_gweonid_forest_1";
+    /// <summary>Repository GitHub da cui scaricare gli aggiornamenti (owner/nome).</summary>
+    public string GitHubRepo { get; set; } = "cammo22/DaProdArcheage";
+    /// <summary>Token GitHub (solo se la repo è privata): permesso "Contents: read".</summary>
+    public string GitHubToken { get; set; } = "";
     public string MaintenanceMessage { get; set; } = "Server in manutenzione, torniamo presto!";
     /// <summary>All'apertura del pannello: setup (se serve) e avvio automatico del server.</summary>
     public bool AutoStart { get; set; } = true;
