@@ -60,6 +60,31 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         var dbSrc = Path.Combine(ZoneFiles, "game_decrypted.sqlite3");
         if (File.Exists(dbSrc) && (!File.Exists(db) || new FileInfo(db).Length != new FileInfo(dbSrc).Length))
         { Directory.CreateDirectory(Path.GetDirectoryName(db)!); File.Copy(dbSrc, db, true); }
+        WriteDedicatedCfg();
+    }
+
+    /// <summary>
+    /// game\config\dedicated.cfg come da guida: il database va indicato qui, perché da riga di comando
+    /// arriva troppo tardi e il motore apre il compact.sqlite3 del pak (a cui mancano tabelle).
+    /// </summary>
+    void WriteDedicatedCfg()
+    {
+        var cfg = Path.Combine(ZoneClient, "game", "config", "dedicated.cfg");
+        Directory.CreateDirectory(Path.GetDirectoryName(cfg)!);
+        const string marker = "-- DaProd";
+        var lines = File.Exists(cfg) ? File.ReadAllLines(cfg).TakeWhile(l => l != marker).ToList() : [];
+        lines.AddRange([
+            marker,
+            "sys_dedicated_server = 1",
+            "world_serveraddr = \"127.0.0.1\"",
+            "world_serverport = 1240",
+            "db_location = \"game/db/game_decrypted.sqlite3\"",
+            "locale = \"en_us\"",
+            "cl_account_id = 1",
+            "auth_serveraddr = 127.0.0.1",
+            $"auth_serverport = {s.LoginPort}"
+        ]);
+        File.WriteAllLines(cfg, lines);
     }
 
     static void CopyDir(string from, string to)
@@ -184,7 +209,11 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         await Task.Delay(2000);
         // "game" = AAEmu.World (contiene la logica di gioco)
         if (!IsRunning("game")) Start("game", Path.Combine(WorldDir, "AAEmu.World.exe"), "", WorldDir);
-        _ = StartZonesWhenWorldReady();
+        _ = Task.Run(async () =>
+        {
+            try { await StartZonesWhenWorldReady(); }
+            catch (Exception ex) { log("zone", "Avvio zone fallito: " + ex); }
+        });
     }
 
     /// <summary>
@@ -251,7 +280,8 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         if (!File.Exists(exe)) { log(name, $"File mancante: {exe}"); return; }
         var psi = new ProcessStartInfo(exe, args)
         {
-            WorkingDirectory = cwd, UseShellExecute = false, CreateNoWindow = true,
+            // lo Zone Host si crea la sua console (AllocConsole): con CreateNoWindow fallisce, quindi finestra nascosta
+            WorkingDirectory = cwd, UseShellExecute = false, CreateNoWindow = !name.StartsWith("zone:"), WindowStyle = ProcessWindowStyle.Hidden,
             RedirectStandardOutput = true, RedirectStandardError = true,
             // lo Zone Host è un programma nativo: con l'input rediretto si chiude subito
             RedirectStandardInput = !name.StartsWith("zone:")

@@ -57,6 +57,7 @@ public sealed class MainForm : Form
     Button? _maintBtn;
     HealthMonitor? _health;
     volatile HealthReport? _lastHealth;
+    static readonly object _logLock = new();
     readonly Panel _card = new() { Dock = DockStyle.Top, Height = 150, Padding = new Padding(18, 12, 18, 12), BackColor = Color.DimGray };
     readonly Label _cardHead = new() { Dock = DockStyle.Top, Height = 34, Font = new Font("Segoe UI Semibold", 15), ForeColor = Color.White };
     readonly Label _cardAdvice = new() { Dock = DockStyle.Top, Height = 26, ForeColor = Color.White };
@@ -164,6 +165,8 @@ public sealed class MainForm : Form
     {
         _health?.OnLog(line);
         var text = $"[{DateTime.Now:HH:mm:ss}] [{src}] {line}\r\n";
+        // copia su file: server\logs\panel.log (utile per diagnosticare)
+        try { lock (_logLock) File.AppendAllText(Path.Combine(PanelSettings.Root, "server", "logs", "panel.log"), text); } catch { }
         if (IsHandleCreated) BeginInvoke(() => { if (_log.TextLength > 500_000) _log.Clear(); _log.AppendText(text); });
     }
 
