@@ -15,6 +15,20 @@ db.execute("ATTACH DATABASE ? AS src", (source,))
 tables = [r[0] for r in db.execute("SELECT name FROM main.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
 src_tables = {r[0] for r in db.execute("SELECT name FROM src.sqlite_master WHERE type='table'")}
 added = 0
+# 1) tabelle che mancano del tutto: le copio intere (schema + dati)
+for name, sql in db.execute("SELECT name, sql FROM src.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
+    if name in tables or not sql:
+        continue
+    db.execute(sql)
+    cur = db.execute(f'INSERT INTO main."{name}" SELECT * FROM src."{name}"')
+    print(f"{name}: nuova tabella, {cur.rowcount} righe")
+    added += max(cur.rowcount, 0)
+for (sql,) in db.execute("SELECT sql FROM src.sqlite_master WHERE type='index' AND sql IS NOT NULL").fetchall():
+    try:
+        db.execute(sql.replace("CREATE INDEX", "CREATE INDEX IF NOT EXISTS").replace("CREATE UNIQUE INDEX", "CREATE UNIQUE INDEX IF NOT EXISTS"))
+    except sqlite3.Error:
+        pass
+# 2) tabelle esistenti: aggiungo solo le righe mancanti
 for t in tables:
     if t not in src_tables:
         continue

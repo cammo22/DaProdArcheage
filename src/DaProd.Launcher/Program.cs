@@ -102,7 +102,7 @@ public sealed class LauncherForm : Form
     public LauncherForm()
     {
         Text = "DaProd ArcheAge Launcher";
-        ClientSize = new Size(860, 520);
+        ClientSize = new Size(900, 600);
         FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Theme.Bg; ForeColor = Theme.Text; Font = new Font("Segoe UI", 10);
@@ -115,8 +115,10 @@ public sealed class LauncherForm : Form
         // intestazione
         var header = new Panel { Dock = DockStyle.Top, Height = 80, Padding = new Padding(28, 16, 28, 0) };
         _title.Location = new Point(26, 16);
-        _live.Anchor = AnchorStyles.Top | AnchorStyles.Right; _live.Location = new Point(ClientSize.Width - 28 - _live.Width, 26);
-        header.Controls.Add(_title); header.Controls.Add(_live);
+        _live.Dock = DockStyle.Right;
+        var liveHost = new Panel { Dock = DockStyle.Right, Width = 300, Padding = new Padding(0, 10, 0, 14) };
+        liveHost.Controls.Add(_live);
+        header.Controls.Add(_title); header.Controls.Add(liveHost);
 
         // notizie (sinistra) + login (destra)
         var body = new Panel { Dock = DockStyle.Fill, Padding = new Padding(28, 8, 28, 8) };
@@ -166,10 +168,10 @@ public sealed class LauncherForm : Form
     async Task Run(Button b, Func<Task> action)
     {
         if (_busy) return;
-        _busy = true; b.Enabled = false;
+        _busy = true; _play.Enabled = _register.Enabled = false;
         try { await action(); }
         catch (Exception ex) { _state.Text = "Errore: " + ex.Message; }
-        finally { _busy = false; b.Enabled = true; }
+        finally { _busy = false; _play.Enabled = _register.Enabled = true; }
     }
 
     string Api(string path) => _s.ServerUrl.TrimEnd('/') + path;
