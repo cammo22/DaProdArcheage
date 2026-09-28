@@ -7,6 +7,9 @@ $srv  = Join-Path $dist "DaProdServer"
 
 dotnet publish "$root\src\DaProd.ServerPanel" -c Release -o $srv
 dotnet publish "$root\src\DaProd.Launcher"    -c Release -o (Join-Path $dist "DaProdLauncher")
+# copia del launcher dentro il server, usata da "Pacchetto amici"
+New-Item -ItemType Directory -Force "$srv\launcher" | Out-Null
+Copy-Item "$dist\DaProdLauncher\DaProdLauncher.exe" "$srv\launcher\" -Force
 
 dotnet publish "$AAEmu\AAEmu.Login\AAEmu.Login.csproj" -c Release -o "$srv\server\bin\login"
 dotnet publish "$AAEmu\AAEmu.Game\AAEmu.Game.csproj"   -c Release -o "$srv\server\bin\game"

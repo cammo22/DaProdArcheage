@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 
 namespace DaProd.ServerPanel;
 
@@ -12,29 +12,40 @@ public sealed class MainForm : Form
     readonly DataGridView _accounts = Grid();
     readonly ListBox _evList = new() { Dock = DockStyle.Left, Width = 260 };
     readonly PropertyGrid _evProps = new() { Dock = DockStyle.Fill };
+    readonly DataGridView _players = Grid();
+    LauncherApi? _api;
 
     public MainForm()
     {
-        Text = "DaProd ArcheAge — Pannello Server";
+        Text = "DaProd ArcheAge â€” Pannello Server";
         Size = new Size(1100, 720);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 10);
 
+        _s.AutoDetect();
         _srv = new ServerManager(_s, Log);
         _events = new EventScheduler(RunEventAsync);
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(DashboardTab());
+        tabs.TabPages.Add(LiveTab());
         tabs.TabPages.Add(AccountsTab());
         tabs.TabPages.Add(EventsTab());
         tabs.TabPages.Add(SqlTab());
         tabs.TabPages.Add(SettingsTab());
         Controls.Add(tabs);
 
-        new LauncherApi(_s, Log).Start();
+        _api = new LauncherApi(_s, Log, () => Live.Snapshot(_s, _srv));
+        _api.Start();
         var t = new System.Windows.Forms.Timer { Interval = 1500 };
         t.Tick += (_, _) => UpdateStatus();
         t.Start();
+        Shown += async (_, _) =>
+        {
+            if (!_s.AutoStart) return;
+            try { await _srv.FirstSetupAsync(); await _srv.StartAllAsync(); }
+            catch (Exception ex) { Log("panel", "Avvio automatico fallito: " + ex.Message); }
+        };
         FormClosing += (_, e) =>
         {
             if (_srv.IsRunning("game") || _srv.IsRunning("login") || _srv.IsRunning("mysql"))
@@ -68,18 +79,19 @@ public sealed class MainForm : Form
 
     void UpdateStatus()
     {
-        string Dot(string n) => (_srv.IsRunning(n) ? "🟢 " : "🔴 ") + n.ToUpperInvariant();
+        string Dot(string n) => (_srv.IsRunning(n) ? "ðŸŸ¢ " : "ðŸ”´ ") + n.ToUpperInvariant();
         _status.Text = $"{Dot("mysql")}    {Dot("login")}    {Dot("game")}        IP pubblico: {_s.PublicIp}:{_s.LoginPort}";
     }
 
     TabPage DashboardTab()
     {
-        var p = new TabPage("🏠 Server");
+        var p = new TabPage("ðŸ  Server");
         var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 70 };
-        bar.Controls.Add(Btn("⚙ Primo setup", Color.SteelBlue, _srv.FirstSetupAsync));
-        bar.Controls.Add(Btn("▶ Avvia server", Color.SeaGreen, _srv.StartAllAsync));
-        bar.Controls.Add(Btn("■ Ferma server", Color.Firebrick, () => { _srv.StopAll(); return Task.CompletedTask; }));
-        bar.Controls.Add(Btn("↻ Riavvia", Color.DarkOrange, async () => { _srv.StopAll(); await Task.Delay(2000); await _srv.StartAllAsync(); }));
+        bar.Controls.Add(Btn("âš™ Primo setup", Color.SteelBlue, _srv.FirstSetupAsync));
+        bar.Controls.Add(Btn("â–¶ Avvia server", Color.SeaGreen, _srv.StartAllAsync));
+        bar.Controls.Add(Btn("â–  Ferma server", Color.Firebrick, () => { _srv.StopAll(); return Task.CompletedTask; }));
+        bar.Controls.Add(Btn("â†» Riavvia", Color.DarkOrange, async () => { _srv.StopAll(); await Task.Delay(2000); await _srv.StartAllAsync(); }));
+        bar.Controls.Add(Btn("📦 Pacchetto amici", Color.MediumPurple, () => { FriendPackage.Create(_s, Log); return Task.CompletedTask; }));
         var statusBar = new Panel { Dock = DockStyle.Top, Height = 34, Padding = new Padding(8) };
         statusBar.Controls.Add(_status);
 
@@ -92,24 +104,40 @@ public sealed class MainForm : Form
         return p;
     }
 
+    TabPage LiveTab()
+    {
+        var p = new TabPage("🌐 Giocatori live");
+        var info = new Label { Dock = DockStyle.Top, Height = 40, Text = "Aggiornato ogni 3 secondi: connessioni attive a Login/Game e dispositivi Tailscale online." };
+        var t = new System.Windows.Forms.Timer { Interval = 3000 };
+        t.Tick += async (_, _) =>
+        {
+            if (!p.Visible) return;
+            var rows = await Task.Run(() => Live.Rows(_s));
+            _players.DataSource = rows;
+        };
+        t.Start();
+        p.Controls.Add(_players); p.Controls.Add(info);
+        return p;
+    }
+
     TabPage AccountsTab()
     {
-        var p = new TabPage("👤 Account");
+        var p = new TabPage("ðŸ‘¤ Account");
         var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 70 };
-        bar.Controls.Add(Btn("↻ Aggiorna", Color.SteelBlue, RefreshAccounts));
-        bar.Controls.Add(Btn("＋ Nuovo account", Color.SeaGreen, async () =>
+        bar.Controls.Add(Btn("â†» Aggiorna", Color.SteelBlue, RefreshAccounts));
+        bar.Controls.Add(Btn("ï¼‹ Nuovo account", Color.SeaGreen, async () =>
         {
             var u = Prompt("Nome utente:"); if (string.IsNullOrWhiteSpace(u)) return;
             var pw = Prompt("Password:"); if (string.IsNullOrWhiteSpace(pw)) return;
             await _srv.CreateAccountAsync(u, pw); await RefreshAccounts();
         }));
-        bar.Controls.Add(Btn("🔑 Cambia password", Color.DarkOrange, async () =>
+        bar.Controls.Add(Btn("ðŸ”‘ Cambia password", Color.DarkOrange, async () =>
         {
             if (SelectedId() is not { } id) return;
             var pw = Prompt("Nuova password:"); if (string.IsNullOrWhiteSpace(pw)) return;
             await _srv.SetPasswordAsync(id, pw);
         }));
-        bar.Controls.Add(Btn("🗑 Elimina", Color.Firebrick, async () =>
+        bar.Controls.Add(Btn("ðŸ—‘ Elimina", Color.Firebrick, async () =>
         {
             if (SelectedId() is not { } id) return;
             if (MessageBox.Show("Eliminare l'account?", "Conferma", MessageBoxButtons.YesNo) == DialogResult.Yes) { await _srv.DeleteAccountAsync(id); await RefreshAccounts(); }
@@ -125,16 +153,16 @@ public sealed class MainForm : Form
 
     TabPage EventsTab()
     {
-        var p = new TabPage("📅 Eventi");
+        var p = new TabPage("ðŸ“… Eventi");
         var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 70 };
-        bar.Controls.Add(Btn("＋ Nuovo evento", Color.SeaGreen, () => { _events.Events.Add(new GameEvent()); _events.Save(); RefreshEvents(); return Task.CompletedTask; }));
-        bar.Controls.Add(Btn("▶ Esegui ora", Color.SteelBlue, async () => { if (_evList.SelectedItem is GameEvent e) await RunEventAsync(e); }));
-        bar.Controls.Add(Btn("🗑 Elimina", Color.Firebrick, () => { if (_evList.SelectedItem is GameEvent e) { _events.Events.Remove(e); _events.Save(); RefreshEvents(); } return Task.CompletedTask; }));
+        bar.Controls.Add(Btn("ï¼‹ Nuovo evento", Color.SeaGreen, () => { _events.Events.Add(new GameEvent()); _events.Save(); RefreshEvents(); return Task.CompletedTask; }));
+        bar.Controls.Add(Btn("â–¶ Esegui ora", Color.SteelBlue, async () => { if (_evList.SelectedItem is GameEvent e) await RunEventAsync(e); }));
+        bar.Controls.Add(Btn("ðŸ—‘ Elimina", Color.Firebrick, () => { if (_evList.SelectedItem is GameEvent e) { _events.Events.Remove(e); _events.Save(); RefreshEvents(); } return Task.CompletedTask; }));
         var help = new Label
         {
             Dock = DockStyle.Bottom, Height = 60,
-            Text = "Azioni: News = cambia le notizie del launcher · Sql = esegue SQL sul database di gioco (es. doppia XP, negozi, spawn) · " +
-                   "ConsoleCommand = invia un comando alla console del Game · RestartServer = riavvio programmato. Daily = ripeti ogni giorno all'ora di 'When'."
+            Text = "Azioni: News = cambia le notizie del launcher Â· Sql = esegue SQL sul database di gioco (es. doppia XP, negozi, spawn) Â· " +
+                   "ConsoleCommand = invia un comando alla console del Game Â· RestartServer = riavvio programmato. Daily = ripeti ogni giorno all'ora di 'When'."
         };
         _evList.DisplayMember = nameof(GameEvent.Name);
         _evList.SelectedIndexChanged += (_, _) => _evProps.SelectedObject = _evList.SelectedItem;
@@ -165,13 +193,13 @@ public sealed class MainForm : Form
 
     TabPage SqlTab()
     {
-        var p = new TabPage("🗄 Database");
+        var p = new TabPage("ðŸ—„ Database");
         var top = new Panel { Dock = DockStyle.Top, Height = 140 };
         var db = new ComboBox { Dock = DockStyle.Left, Width = 140, DropDownStyle = ComboBoxStyle.DropDownList };
         db.Items.AddRange(["aaemu_game", "aaemu_login"]); db.SelectedIndex = 0;
         var q = new TextBox { Dock = DockStyle.Fill, Multiline = true, Font = new Font("Consolas", 10), Text = "SELECT id, name, level FROM characters LIMIT 50" };
         var grid = Grid();
-        var run = Btn("▶ Esegui", Color.SteelBlue, async () =>
+        var run = Btn("â–¶ Esegui", Color.SteelBlue, async () =>
         {
             if (q.Text.TrimStart().StartsWith("select", StringComparison.OrdinalIgnoreCase)) grid.DataSource = await _srv.QueryAsync((string)db.SelectedItem!, q.Text);
             else MessageBox.Show($"Righe modificate: {await _srv.ExecAsync((string)db.SelectedItem!, q.Text)}");
@@ -184,10 +212,10 @@ public sealed class MainForm : Form
 
     TabPage SettingsTab()
     {
-        var p = new TabPage("⚙ Impostazioni");
+        var p = new TabPage("âš™ Impostazioni");
         var pg = new PropertyGrid { Dock = DockStyle.Fill, SelectedObject = _s };
-        pg.PropertyValueChanged += (_, _) => _s.Save();
-        var info = new Label { Dock = DockStyle.Top, Height = 50, Text = "PublicIp = il tuo IP (o Radmin/ZeroTier) che danno gli amici · GamePakDir = cartella game_pak del client · Apri sul router le porte 1237, 1239 e la porta API del launcher." };
+        pg.PropertyValueChanged += (_, e) => { _s.Save(); if (e.ChangedItem?.Label == nameof(PanelSettings.ClientDir)) { _s.GamePakDir = ""; _s.AutoDetect(); _api?.ResetManifest(); } };
+        var info = new Label { Dock = DockStyle.Top, Height = 50, Text = "PublicIp = il tuo IP (o Radmin/ZeroTier) che danno gli amici Â· GamePakDir = cartella game_pak del client Â· Apri sul router le porte 1237, 1239 e la porta API del launcher." };
         p.Controls.Add(pg); p.Controls.Add(info);
         return p;
     }
@@ -212,3 +240,4 @@ static class Program
         Application.Run(new MainForm());
     }
 }
+

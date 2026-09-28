@@ -57,49 +57,99 @@ public sealed class EventScheduler
     }
 }
 
-/// <summary>Mini API HTTP letta dal launcher: http://IP:porta/launcher.json</summary>
-public sealed class LauncherApi(PanelSettings s, Action<string, string> log)
+public sealed record ManifestFile(string path, long size, long time);
+
+/// <summary>
+/// API HTTP letta dal launcher:
+///   /launcher.json      info server + stato live
+///   /manifest.json      elenco file del client (per download/aggiornamento)
+///   /files/{percorso}   download di un file del client
+/// </summary>
+public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Func<object> liveStatus)
 {
     HttpListener? _l;
+    List<ManifestFile>? _manifest;
+    DateTime _manifestAt;
 
     public void Start()
     {
-        try
+        if (!TryListen($"http://+:{s.LauncherApiPort}/"))
         {
-            _l = new HttpListener();
-            _l.Prefixes.Add($"http://+:{s.LauncherApiPort}/");
-            _l.Start();
+            // Serve una sola volta: permesso URL + regola firewall (chiede conferma UAC).
+            log("api", "Configuro permessi rete e firewall (conferma la richiesta di Windows)...");
+            var cmd = $"/c netsh http add urlacl url=http://+:{s.LauncherApiPort}/ user=Everyone & " +
+                      $"netsh advfirewall firewall add rule name=DaProdArcheage dir=in action=allow protocol=TCP localport={s.LoginPort},{s.GamePort},{s.LauncherApiPort}";
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", cmd) { Verb = "runas", UseShellExecute = true, WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden })!.WaitForExit(); } catch { }
+            if (!TryListen($"http://+:{s.LauncherApiPort}/") && !TryListen($"http://localhost:{s.LauncherApiPort}/"))
+            { log("api", "Impossibile avviare l'API launcher."); return; }
         }
-        catch
-        {
-            // Senza permessi admin "+" non è consentito: ripiego su localhost.
-            _l = new HttpListener();
-            _l.Prefixes.Add($"http://localhost:{s.LauncherApiPort}/");
-            _l.Start();
-            log("api", $"API solo su localhost. Per gli amici esegui una volta come admin: netsh http add urlacl url=http://+:{s.LauncherApiPort}/ user=Everyone");
-        }
-        log("api", $"API launcher attiva sulla porta {s.LauncherApiPort}.");
+        log("api", $"API launcher attiva: http://{s.PublicIp}:{s.LauncherApiPort}/");
         _ = Task.Run(Loop);
+    }
+
+    bool TryListen(string prefix)
+    {
+        try { _l = new HttpListener(); _l.Prefixes.Add(prefix); _l.Start(); return true; }
+        catch { _l = null; return false; }
+    }
+
+    public void ResetManifest() => _manifest = null;
+
+    List<ManifestFile> Manifest()
+    {
+        // ricalcolo ogni 5 minuti: così un client aggiornato viene rilevato da solo
+        if (_manifest != null && DateTime.Now - _manifestAt < TimeSpan.FromMinutes(5)) return _manifest;
+        _manifestAt = DateTime.Now;
+        if (!Directory.Exists(s.ClientDir)) return _manifest = [];
+        return _manifest = new DirectoryInfo(s.ClientDir).EnumerateFiles("*", SearchOption.AllDirectories)
+            .Select(f => new ManifestFile(Path.GetRelativePath(s.ClientDir, f.FullName).Replace('\\', '/'), f.Length, f.LastWriteTimeUtc.Ticks))
+            .ToList();
     }
 
     async Task Loop()
     {
         while (_l is { IsListening: true })
         {
-            try
-            {
-                var ctx = await _l.GetContextAsync();
-                var body = JsonSerializer.Serialize(new
-                {
-                    name = s.ServerName, ip = s.PublicIp, port = s.LoginPort,
-                    news = s.News, clientUrl = s.ClientDownloadUrl, launchArgs = s.LaunchArgs
-                });
-                var b = Encoding.UTF8.GetBytes(body);
-                ctx.Response.ContentType = "application/json";
-                await ctx.Response.OutputStream.WriteAsync(b);
-                ctx.Response.Close();
-            }
-            catch { }
+            HttpListenerContext ctx;
+            try { ctx = await _l.GetContextAsync(); } catch { continue; }
+            _ = Task.Run(() => Handle(ctx));
         }
+    }
+
+    async Task Handle(HttpListenerContext ctx)
+    {
+        try
+        {
+            var path = Uri.UnescapeDataString(ctx.Request.Url!.AbsolutePath);
+            if (path.StartsWith("/files/"))
+            {
+                var rel = path["/files/".Length..];
+                var full = Path.GetFullPath(Path.Combine(s.ClientDir, rel));
+                // blocca path traversal: si servono solo file dentro ClientDir
+                if (!full.StartsWith(Path.GetFullPath(s.ClientDir), StringComparison.OrdinalIgnoreCase) || !File.Exists(full))
+                { ctx.Response.StatusCode = 404; ctx.Response.Close(); return; }
+                await using var fs = File.OpenRead(full);
+                ctx.Response.ContentType = "application/octet-stream";
+                ctx.Response.ContentLength64 = fs.Length;
+                await fs.CopyToAsync(ctx.Response.OutputStream);
+                ctx.Response.Close();
+                return;
+            }
+            object body = path switch
+            {
+                "/manifest.json" => Manifest(),
+                _ => new
+                {
+                    name = s.ServerName, ip = s.PublicIp, port = s.LoginPort, news = s.News,
+                    clientUrl = s.ClientDownloadUrl, launchArgs = s.LaunchArgs, live = liveStatus()
+                }
+            };
+            var b = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(body));
+            ctx.Response.ContentType = "application/json";
+            ctx.Response.ContentLength64 = b.Length;
+            await ctx.Response.OutputStream.WriteAsync(b);
+            ctx.Response.Close();
+        }
+        catch { try { ctx.Response.Abort(); } catch { } }
     }
 }
