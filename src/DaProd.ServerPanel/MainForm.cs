@@ -55,6 +55,11 @@ public sealed class MainForm : Form
     readonly Dictionary<string, Control> _pages = new();
     readonly List<Button> _nav = [];
     Button? _maintBtn;
+    HealthMonitor? _health;
+    readonly Panel _card = new() { Dock = DockStyle.Top, Height = 150, Padding = new Padding(18, 12, 18, 12), BackColor = Color.DimGray };
+    readonly Label _cardHead = new() { Dock = DockStyle.Top, Height = 34, Font = new Font("Segoe UI Semibold", 15), ForeColor = Color.White };
+    readonly Label _cardAdvice = new() { Dock = DockStyle.Top, Height = 26, ForeColor = Color.White };
+    readonly FlowLayoutPanel _svcCards = new() { Dock = DockStyle.Fill, Padding = new Padding(0, 8, 0, 0) };
 
     public MainForm()
     {
@@ -65,6 +70,7 @@ public sealed class MainForm : Form
 
         _s.AutoDetect();
         _srv = new ServerManager(_s, Log);
+        _health = new HealthMonitor(_s, _srv);
         _events = new EventScheduler(RunEventAsync);
 
         _pages["Server"] = DashboardPage();
@@ -96,6 +102,9 @@ public sealed class MainForm : Form
         _api.Start();
         var t = new System.Windows.Forms.Timer { Interval = 1500 };
         t.Tick += (_, _) => UpdateStatus();
+        var ht = new System.Windows.Forms.Timer { Interval = 2000 };
+        ht.Tick += async (_, _) => { try { ShowHealth(await Task.Run(() => _health!.Check())); } catch { } };
+        ht.Start();
         t.Start();
         UpdateStatus();
 
@@ -151,6 +160,7 @@ public sealed class MainForm : Form
 
     void Log(string src, string line)
     {
+        _health?.OnLog(line);
         var text = $"[{DateTime.Now:HH:mm:ss}] [{src}] {line}\r\n";
         if (IsHandleCreated) BeginInvoke(() => { if (_log.TextLength > 500_000) _log.Clear(); _log.AppendText(text); });
     }
@@ -166,13 +176,42 @@ public sealed class MainForm : Form
         _pills.SuspendLayout();
         _pills.Controls.Clear();
         foreach (var n in new[] { "mysql", "login", "game" })
-            _pills.Controls.Add(Pill((n == "mysql" ? "MySQL" : n == "login" ? "Login" : "Game") + (_srv.IsRunning(n) ? "  ON" : "  OFF"), _srv.IsRunning(n) ? Theme.Green : Theme.Red));
+            _pills.Controls.Add(Pill((n == "mysql" ? "MySQL" : n == "login" ? "Login" : "World") + (_srv.IsRunning(n) ? "  ON" : "  OFF"), _srv.IsRunning(n) ? Theme.Green : Theme.Red));
         if (_s.Maintenance) _pills.Controls.Add(Pill("MANUTENZIONE", Theme.Orange));
         _pills.Controls.Add(new Label { AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(12, 5, 0, 0), Text = $"Indirizzo launcher: http://{_s.PublicIp}:{_s.LauncherApiPort}" });
         _pills.ResumeLayout();
         _maintBanner.Height = _s.Maintenance ? 34 : 0;
         _maintBanner.Text = "MODALITA' MANUTENZIONE ATTIVA - i giocatori non possono entrare";
         if (_maintBtn != null) { _maintBtn.Text = _s.Maintenance ? "Fine manutenzione" : "Manutenzione"; _maintBtn.BackColor = _s.Maintenance ? Theme.Green : Theme.Orange; }
+    }
+
+    static Color StateColor(HealthState st) => st switch
+    {
+        HealthState.Operativo => Theme.Green, HealthState.Avvio => Color.FromArgb(200, 160, 30),
+        HealthState.Problema => Theme.Red, _ => Color.FromArgb(80, 84, 96)
+    };
+
+    void ShowHealth(HealthReport r)
+    {
+        _card.BackColor = StateColor(r.Overall);
+        _cardHead.Text = r.Headline;
+        _cardAdvice.Text = r.Advice;
+        _svcCards.SuspendLayout(); _svcCards.Controls.Clear();
+        foreach (var sv in r.Services)
+            _svcCards.Controls.Add(MiniCard(sv.Name, sv.State.ToString().ToUpperInvariant(), sv.Detail, StateColor(sv.State)));
+        var pcBad = r.CpuPc > 95 || r.RamPc > 92 || r.DiskFreeGb < 5;
+        _svcCards.Controls.Add(MiniCard("Il tuo PC", pcBad ? "SOTTO SFORZO" : "OK", $"CPU {r.CpuPc:F0}%  RAM {r.RamPc:F0}%  Disco {r.DiskFreeGb:F0} GB", pcBad ? Theme.Red : Color.FromArgb(50, 54, 66)));
+        _svcCards.ResumeLayout();
+    }
+
+    static Panel MiniCard(string title, string state, string detail, Color c)
+    {
+        var p = new Panel { Width = 176, Height = 62, BackColor = Color.FromArgb(40, 0, 0, 0), Margin = new Padding(0, 0, 8, 0), Padding = new Padding(8, 4, 4, 4) };
+        p.BackColor = ControlPaint.Dark(c, 0.1f);
+        p.Controls.Add(new Label { Text = detail, Dock = DockStyle.Top, Height = 20, ForeColor = Color.White, Font = new Font("Segoe UI", 8.5f) });
+        p.Controls.Add(new Label { Text = state, Dock = DockStyle.Top, Height = 18, ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9) });
+        p.Controls.Add(new Label { Text = title, Dock = DockStyle.Top, Height = 18, ForeColor = Color.White, Font = new Font("Segoe UI", 8.5f) });
+        return p;
     }
 
     async Task ToggleMaintenance()
@@ -211,7 +250,9 @@ public sealed class MainForm : Form
         cmd.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { _srv.SendConsole("game", cmd.Text); cmd.Clear(); e.SuppressKeyPress = true; } };
         cmdBar.Controls.Add(cmd);
 
+        _card.Controls.Add(_svcCards); _card.Controls.Add(_cardAdvice); _card.Controls.Add(_cardHead);
         p.Controls.Add(_log); p.Controls.Add(cmdBar); p.Controls.Add(new Panel { Dock = DockStyle.Top, Height = 8 }); p.Controls.Add(bar);
+        p.Controls.Add(new Panel { Dock = DockStyle.Top, Height = 10 }); p.Controls.Add(_card);
         p.Controls.Add(Theme.Title("Server"));
         return p;
     }

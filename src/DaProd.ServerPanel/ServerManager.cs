@@ -17,6 +17,29 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
     static string LoginDir => Path.Combine(ServerDir, "bin", "login");
     static string GameDir => Path.Combine(ServerDir, "bin", "game");
     static string SqlDir => Path.Combine(ServerDir, "sql");
+    static string WorldDir => Path.Combine(ServerDir, "bin", "world");
+    static string ZoneFiles => Path.Combine(ServerDir, "zonehost");
+    string Bin64 => Path.Combine(s.ClientDir, "Bin64");
+
+    /// <summary>Quando è stato avviato ogni processo (per capire se è ancora "in caricamento").</summary>
+    public DateTime? StartedAt(string name) => _procs.TryGetValue(name, out var p) && !p.HasExited ? p.StartTime : null;
+    public Process? Proc(string name) => _procs.TryGetValue(name, out var p) && !p.HasExited ? p : null;
+    public int Crashes { get; private set; }
+    readonly HashSet<string> _stopping = [];
+
+    /// <summary>Copia nel client i file del server di zona (ZoneHost, dll, database).</summary>
+    void PrepareZoneHost()
+    {
+        if (!Directory.Exists(Bin64)) { log("zone", $"Client non trovato in {s.ClientDir}"); return; }
+        foreach (var f in new[] { "AAEmu.ZoneHost.exe", "x2game-dev_dedicate.dll" })
+        {
+            var src = Path.Combine(ZoneFiles, f); var dst = Path.Combine(Bin64, f);
+            if (File.Exists(src) && (!File.Exists(dst) || new FileInfo(dst).Length != new FileInfo(src).Length)) File.Copy(src, dst, true);
+        }
+        var db = Path.Combine(s.ClientDir, "game", "db", "game_decrypted.sqlite3");
+        var dbSrc = Path.Combine(ZoneFiles, "game_decrypted.sqlite3");
+        if (!File.Exists(db) && File.Exists(dbSrc)) { Directory.CreateDirectory(Path.GetDirectoryName(db)!); File.Copy(dbSrc, db); }
+    }
 
     public string ConnString(string db = "") =>
         $"Server=127.0.0.1;Port={s.MySqlPort};User ID=root;Database={db};SslMode=None;AllowUserVariables=true";
@@ -81,10 +104,27 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         if (!string.IsNullOrWhiteSpace(s.GamePakDir))
             game["ClientData"] = new JsonObject { ["Sources"] = new JsonArray(s.GamePakDir) };
 
+        // World = logica di gioco (carica AAEmu.Game da GameContentRoot) + avvia lo Zone Host che carica le mappe
+        var world = new JsonObject
+        {
+            ["GameContentRoot"] = GameDir,
+            ["ZoneGameDataRoot"] = Path.Combine(s.ClientDir, "game"),
+            ["PublicNetwork"] = new JsonObject { ["Host"] = s.UseTailscale ? "127.0.0.1" : s.PublicIp, ["Port"] = s.GamePort },
+            ["ZoneHost"] = new JsonObject
+            {
+                ["Enabled"] = true,
+                ["Executable"] = Path.Combine(Bin64, "AAEmu.ZoneHost.exe"),
+                ["WorkingDirectory"] = Bin64,
+                ["NativeDll"] = Path.Combine(Bin64, "x2game-dev_dedicate.dll"),
+                ["RuntimeLogRoot"] = Path.Combine(ServerDir, "logs", "zone")
+            }
+        };
+
         var o = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(Path.Combine(LoginDir, "Config.Local.json"), login.ToJsonString(o));
         File.WriteAllText(Path.Combine(GameDir, "Config.Local.json"), game.ToJsonString(o));
-        log("panel", "Config.Local.json scritti per Login e Game.");
+        if (Directory.Exists(WorldDir)) File.WriteAllText(Path.Combine(WorldDir, "Config.Local.json"), world.ToJsonString(o));
+        log("panel", "Configurazioni scritte per Login, Game e World.");
     }
 
     // ---------- Processi ----------
@@ -106,21 +146,26 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
     {
         await StartMySqlAsync();
         WriteConfigs();
+        PrepareZoneHost();
         if (!IsRunning("login")) Start("login", Path.Combine(LoginDir, "AAEmu.Login.exe"), "", LoginDir);
         await Task.Delay(2000);
-        if (!IsRunning("game")) Start("game", Path.Combine(GameDir, "AAEmu.Game.exe"), "", GameDir);
+        // "game" = AAEmu.World (contiene la logica di gioco e avvia lo Zone Host)
+        if (!IsRunning("game")) Start("game", Path.Combine(WorldDir, "AAEmu.World.exe"), "", WorldDir);
     }
 
     public void StopAll()
     {
         foreach (var n in new[] { "game", "login", "mysql" }) Stop(n);
+        foreach (var z in Process.GetProcessesByName("AAEmu.ZoneHost")) try { z.Kill(); } catch { }
     }
 
     public void Stop(string name)
     {
         if (!_procs.TryGetValue(name, out var p)) return;
+        _stopping.Add(name);
         try { if (!p.HasExited) { p.Kill(true); p.WaitForExit(5000); } } catch { }
         _procs.Remove(name);
+        _stopping.Remove(name);
         log(name, "Fermato.");
     }
 
@@ -138,11 +183,18 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         };
         p.OutputDataReceived += (_, e) => { if (e.Data != null) log(name, e.Data); };
         p.ErrorDataReceived += (_, e) => { if (e.Data != null) log(name, e.Data); };
-        p.Exited += (_, _) => log(name, "Processo terminato.");
+        p.Exited += (_, _) =>
+        {
+            if (_stopping.Contains(name)) return;
+            Crashes++;
+            log(name, $"ARRESTO IMPREVISTO (codice {SafeExit(p)}). Controlla i log in server\\bin\\...\\Logs");
+        };
         p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine();
         _procs[name] = p;
         log(name, "Avviato.");
     }
+
+    static string SafeExit(Process p) { try { return p.ExitCode.ToString(); } catch { return "?"; } }
 
     /// <summary>Invia un comando alla console del processo (es. comandi admin del Game server).</summary>
     public void SendConsole(string name, string line)

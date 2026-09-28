@@ -136,6 +136,9 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
 
     public void ResetManifest() => _manifest = null;
 
+    /// <summary>File del server di zona dentro il client: non vanno scaricati dagli amici.</summary>
+    static readonly string[] ServerOnly = ["Bin64/AAEmu.ZoneHost.exe", "Bin64/x2game-dev_dedicate.dll", "game/db/game_decrypted.sqlite3"];
+
     List<ManifestFile> Manifest()
     {
         // ricalcolo ogni 5 minuti: così un client aggiornato viene rilevato da solo
@@ -144,6 +147,7 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
         if (!Directory.Exists(s.ClientDir)) return _manifest = [];
         return _manifest = new DirectoryInfo(s.ClientDir).EnumerateFiles("*", SearchOption.AllDirectories)
             .Select(f => new ManifestFile(Path.GetRelativePath(s.ClientDir, f.FullName).Replace('\\', '/'), f.Length, f.LastWriteTimeUtc.Ticks))
+            .Where(f => !ServerOnly.Contains(f.path, StringComparer.OrdinalIgnoreCase))
             .ToList();
     }
 
