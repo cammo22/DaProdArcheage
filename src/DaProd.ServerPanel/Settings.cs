@@ -162,6 +162,30 @@ public static class ZoneCatalog
     static Dictionary<string, uint>? _ids;
     static readonly Dictionary<string, int> Groups = new(StringComparer.OrdinalIgnoreCase);
 
+    static Dictionary<int, int[]>? _neighbours;
+
+    /// <summary>Regioni confinanti (rettangoli di zone_groups che si toccano): si precaricano prima che il giocatore ci arrivi.</summary>
+    public static int[] NeighboursOf(int group)
+    {
+        if (_neighbours == null)
+        {
+            var d = new Dictionary<int, int[]>();
+            using var st = typeof(ZoneCatalog).Assembly.GetManifestResourceStream("zone_neighbors.txt");
+            if (st != null)
+            {
+                using var rd = new StreamReader(st);
+                foreach (var l in rd.ReadToEnd().Split('\n').Select(x => x.TrimEnd('\r')).Where(l => l.Length > 0 && l[0] != '#'))
+                {
+                    var p = l.Split('\t');
+                    if (p.Length == 2 && int.TryParse(p[0], out var g))
+                        d[g] = p[1].Split(',', StringSplitOptions.RemoveEmptyEntries).Select(int.Parse).ToArray();
+                }
+            }
+            _neighbours = d;
+        }
+        return _neighbours.GetValueOrDefault(group) ?? [];
+    }
+
     /// <summary>Gruppo di regione (es. le 3 parti di Solzreed): si caricano insieme.</summary>
     public static int GroupOf(string name) { IdOf(name); return Groups.GetValueOrDefault(name); }
 

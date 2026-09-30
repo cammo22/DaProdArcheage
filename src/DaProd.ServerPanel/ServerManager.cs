@@ -29,6 +29,8 @@ public sealed class ZoneInfo
     public DateTime? Started;
     public readonly List<DateTime> RestartLog = [];
     public bool Running => Proc is { HasExited: false };
+    /// <summary>Avvio già richiesto e non ancora partito: evita due processi per la stessa zona.</summary>
+    public bool Starting;
 }
 
 /// <summary>
@@ -440,9 +442,13 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
     /// <summary>Avvia una zona aspettando che non ce ne siano più di 6 in caricamento: niente picchi di CPU e RAM.</summary>
     async Task StartZoneSafeAsync(ZoneInfo z)
     {
-        for (var i = 0; i < 180 && Zones.Count(x => x.Running && !x.Loaded) >= 6; i++) await Task.Delay(1000);
-        if (!_wanted || !IsRunning("game") || z.Running || !z.Wanted) return;
-        StartZoneProc(z);
+        try
+        {
+            for (var i = 0; i < 180 && Zones.Count(x => x.Running && !x.Loaded) >= 6; i++) await Task.Delay(1000);
+            if (!_wanted || !IsRunning("game") || z.Running || !z.Wanted) return;
+            StartZoneProc(z);
+        }
+        finally { z.Starting = false; }
     }
 
     // ---- zone dinamiche: il World scrive DAPROD_ZONE_ENTER / LEAVE / NEED, qui le leggo
@@ -476,24 +482,47 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
         {
             var z = _zones.Values.FirstOrDefault(x => x.ZoneId == zoneId && x.Instance == inst) ?? _zones.Values.FirstOrDefault(x => x.ZoneId == zoneId);
             if (z == null) return;
-            foreach (var x in _zones.Values.Where(x => x == z || (z.Group > 0 && x.Group == z.Group)))
+            // prima la zona richiesta, poi la sua regione, poi le regioni confinanti (il giocatore ci può camminare dentro)
+            var near = z.Group > 0 ? ZoneCatalog.NeighboursOf(z.Group) : [];
+            foreach (var x in _zones.Values
+                         .Where(x => x == z || (z.Group > 0 && (x.Group == z.Group || near.Contains(x.Group))))
+                         .OrderBy(x => x == z ? 0 : x.Group == z.Group ? 1 : 2))
             {
                 x.EmptySince = null;
+                if (x.Running || x.Starting) continue;
                 if (!x.Wanted) { x.Wanted = true; x.GaveUp = false; x.RestartLog.Clear(); }
-                if (!x.Running) toStart.Add(x);
+                x.Starting = true;
+                toStart.Add(x);
             }
         }
-        foreach (var x in toStart) { log("zone", $"Carico {x.Key} (serve a un giocatore)."); _ = Task.Run(() => StartZoneSafeAsync(x)); }
+        if (toStart.Count == 0) return;
+        // avvio in fila (la zona richiesta per prima, al massimo 6 in caricamento insieme)
+        _ = Task.Run(async () =>
+        {
+            foreach (var x in toStart)
+            {
+                log("zone", $"Carico {x.Key} (serve a un giocatore o è vicina).");
+                await StartZoneSafeAsync(x);
+                await Task.Delay(300);
+            }
+        });
     }
 
     /// <summary>Scarica le zone dinamiche rimaste vuote (con la loro regione) per più di ZoneIdleMinutes.</summary>
     void UnloadIdleZones()
     {
         if (!s.DynamicZones) return;
+        // regioni "in uso": quelle con giocatori e le loro confinanti (restano caricate finché servono)
+        var busy = new HashSet<int>();
+        foreach (var z in Zones.Where(z => z.Group > 0 && PlayersIn(z) > 0))
+        {
+            busy.Add(z.Group);
+            foreach (var n in ZoneCatalog.NeighboursOf(z.Group)) busy.Add(n);
+        }
         foreach (var z in Zones.Where(z => z.Wanted && !z.AlwaysOn && z.Running))
         {
             if (z.Started != null && DateTime.Now - z.Started < TimeSpan.FromMinutes(3)) continue;
-            if (GroupPlayers(z) > 0) { z.EmptySince = null; continue; }
+            if (GroupPlayers(z) > 0 || (z.Group > 0 && busy.Contains(z.Group))) { z.EmptySince = null; continue; }
             z.EmptySince ??= DateTime.Now;
             if (DateTime.Now - z.EmptySince < TimeSpan.FromMinutes(Math.Max(1, s.ZoneIdleMinutes))) continue;
             log("zone", $"Scarico {z.Key}: vuota da {s.ZoneIdleMinutes} minuti.");
@@ -508,7 +537,9 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
         ZoneInfo? z; lock (_lock) _zones.TryGetValue(key, out z);
         if (z == null) return;
         z.Wanted = true; z.GaveUp = false; z.RestartLog.Clear();
-        if (!z.Running) _ = Task.Run(() => StartZoneSafeAsync(z));
+        if (z.Running || z.Starting) return;
+        z.Starting = true;
+        _ = Task.Run(() => StartZoneSafeAsync(z));
     }
 
     void StartZoneProc(ZoneInfo z)

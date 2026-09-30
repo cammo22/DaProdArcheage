@@ -14,6 +14,7 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="Resources\zone_map_names.txt" LogicalName="zone_map_names.txt" />
+    <EmbeddedResource Include="Resources\zone_neighbors.txt" LogicalName="zone_neighbors.txt" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="MySqlConnector" Version="2.4.0" />

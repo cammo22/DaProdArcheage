@@ -259,3 +259,137 @@
 +        }
 +    }
 +}
+--- a/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs
++++ b/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs
+@@ -194,6 +194,11 @@
+ 
+             character.Breath = character.LungCapacity;
+ 
++            // DaProd: la schermata di caricamento dura decine di secondi: avviso subito il pannello, così la zona
++            // dove si trova il personaggio (zone dinamiche) è già caricata quando il client entra in gioco.
++            if (WorldIntegration.ZoneAuthority)
++                Logger.Info("DAPROD_ZONE_NEED zone={0} inst=0", Connection.ActiveChar.Transform.ZoneId);
++
+             Connection.ActiveChar.OnZoneChange(0, Connection.ActiveChar.Transform.ZoneId);
+         }
+         else
+--- a/AAEmu.Game/Core/Packets/C2G/CSNotifyInGamePacket.cs
++++ b/AAEmu.Game/Core/Packets/C2G/CSNotifyInGamePacket.cs
+@@ -43,17 +43,47 @@
+             var body = WorldIntegration.BuildWzUnitStateBody(Connection.ActiveChar);
+             if (!WorldIntegration.TryEnterZone(Connection.ActiveChar.ObjId, body))
+             {
+-                Logger.Error(
+-                    "NotifyInGame: zone enter refused for {0}; returning to character select",
+-                    Connection.ActiveChar.Name);
+-                if (!EnterWorldManager.Instance.ReturnToCharacterSelect(
+-                        Connection,
+-                        "the requested zone is not available"))
+-                    Connection.Shutdown();
++                // DaProd: la zona (dinamica) si sta caricando: il giocatore aspetta nella schermata di caricamento
++                // invece di tornare alla selezione del personaggio. Solo se non arriva entro ~100 s si rinuncia.
++                var connection = Connection;
++                var waiting = connection.ActiveChar;
++                Logger.Warn("NotifyInGame: zone not ready for {0}; waiting for it to load", waiting.Name);
++                _ = Task.Run(async () =>
++                {
++                    try
++                    {
++                        for (var i = 0; i < 100; i++)
++                        {
++                            await Task.Delay(1000);
++                            if (connection.ActiveChar != waiting)
++                                return; // disconnected or changed character meanwhile
++                            if (WorldIntegration.TryEnterZone(waiting.ObjId, WorldIntegration.BuildWzUnitStateBody(waiting)))
++                            {
++                                CompleteEnter();
++                                return;
++                            }
++                        }
++
++                        Logger.Error("NotifyInGame: zone still unavailable for {0}; returning to character select", waiting.Name);
++                        if (connection.ActiveChar == waiting &&
++                            !EnterWorldManager.Instance.ReturnToCharacterSelect(connection, "the requested zone is not available"))
++                            connection.Shutdown();
++                    }
++                    catch (Exception ex)
++                    {
++                        Logger.Error(ex, "NotifyInGame: waiting for the zone failed");
++                    }
++                });
+                 return;
+             }
+         }
+ 
++        CompleteEnter();
++    }
++
++    /// <summary>Rest of the world entry, once the zone owns the character.</summary>
++    private void CompleteEnter()
++    {
+         Connection.ActiveChar.IsOnline = true;
+ 
+         // First packet the reference pushes once the context reaches INGAME — enables the client's gameplay
+--- a/AAEmu.Game/Models/Game/Char/Character.cs
++++ b/AAEmu.Game/Models/Game/Char/Character.cs
+@@ -3144,6 +3144,42 @@
+     }
+ 
+     private CancellationTokenSource _unreleasedZoneTransportedOut;
++    private int _zoneHandoffWaiting;
++
++    /// <summary>DaProd: retries the zone handoff every second until the destination zone is loaded.</summary>
++    private async Task WaitForZoneHandoffAsync(AAEmu.Game.Core.Network.Connections.GameConnection connection, uint wantedZoneKey)
++    {
++        if (Interlocked.Exchange(ref _zoneHandoffWaiting, 1) == 1)
++            return; // already waiting (the refusal repeats on every position update)
++        try
++        {
++            Logger.Warn("Zone {0} not loaded yet: {1} waits for it", wantedZoneKey, Name);
++            for (var i = 0; i < 100; i++)
++            {
++                await Task.Delay(1000);
++                if (connection.ActiveChar != this)
++                    return; // logged out or changed character meanwhile
++                var target = Transform.ZoneId != 0 ? Transform.ZoneId : wantedZoneKey;
++                // old zone id 0: the previous host already released the unit on the first attempt
++                if (WorldIntegration.RelayCharacterZoneHandoff?.Invoke(ObjId, 0, target, WorldIntegration.BuildWzUnitStateBody(this)) == true)
++                {
++                    Logger.Info("Zone {0} is ready: {1} continues", target, Name);
++                    return;
++                }
++            }
++
++            Logger.Error("Zone {0} did not load in time for {1}; returning to character select", wantedZoneKey, Name);
++            EnterWorldManager.Instance.ReturnToCharacterSelect(connection, $"zone {wantedZoneKey} is not available");
++        }
++        catch (Exception ex)
++        {
++            Logger.Error(ex, "Waiting for zone {0} failed", wantedZoneKey);
++        }
++        finally
++        {
++            Interlocked.Exchange(ref _zoneHandoffWaiting, 0);
++        }
++    }
+ 
+     public override void OnZoneChange(uint lastZoneKey, uint newZoneKey)
+     {
+@@ -3194,14 +3230,11 @@
+                     "Zone handoff refused for {0} (ObjId={1}) from zone {2} to {3}; returning to character select",
+                     Name, ObjId, lastZoneKey, newZoneKey);
+ 
+-                // Leave the Transform.ZoneId callback before world cleanup detaches the character hierarchy.
++                // DaProd: zona dinamica non ancora caricata: il giocatore aspetta che il pannello la carichi
++                // (il personaggio resta fermo) invece di essere rimandato alla selezione. Dopo ~100 s si rinuncia.
+                 var failedConnection = Connection;
+                 if (failedConnection != null)
+-                {
+-                    _ = Task.Run(() => EnterWorldManager.Instance.ReturnToCharacterSelect(
+-                        failedConnection,
+-                        $"zone {newZoneKey} is not available"));
+-                }
++                    _ = Task.Run(() => WaitForZoneHandoffAsync(failedConnection, newZoneKey));
+ 
+                 return;
+             }
