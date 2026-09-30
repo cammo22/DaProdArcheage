@@ -260,6 +260,7 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
             }
         };
 
+        world["GeoDataMode"] = Tweaks.On("geoData"); // senza GeoData il World usa circa 1 GB in meno
         ConfigOverrides.Apply(game, Path.Combine(GameDir, "Configurations"));
         if (!File.Exists(Tweaks.FilePath)) Tweaks.Save(Tweaks.Load());
         var o = new JsonSerializerOptions { WriteIndented = true };
@@ -288,7 +289,10 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
         if (IsRunning("mysql")) return;
         var basedir = Path.GetDirectoryName(MySqlBin)!;
         Start("mysql", Path.Combine(MySqlBin, "mysqld.exe"),
-            $"--basedir=\"{basedir}\" --datadir=\"{MySqlData}\" --port={s.MySqlPort} --bind-address=127.0.0.1 --console", MySqlBin);
+            $"--basedir=\"{basedir}\" --datadir=\"{MySqlData}\" --port={s.MySqlPort} --bind-address=127.0.0.1 --console " +
+            // poca memoria: senza performance schema, senza X plugin né log binario, cache piccole (il server è per pochi amici)
+            "--performance_schema=OFF --mysqlx=OFF --skip-log-bin --innodb_buffer_pool_size=256M --innodb_log_buffer_size=8M " +
+            "--max_connections=80 --table_open_cache=512 --tmp_table_size=16M --max_heap_table_size=16M --thread_cache_size=8", MySqlBin);
         for (var i = 0; i < 60; i++)
         {
             try { await using var c = new MySqlConnection(ConnString()); await c.OpenAsync(); return; }
@@ -302,7 +306,12 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
 
     void StartWorld()
     {
-        var p = Start("game", Path.Combine(WorldDir, "AAEmu.World.exe"), "", WorldDir, new() { ["DAPROD_TWEAKS"] = Tweaks.FilePath });
+        var p = Start("game", Path.Combine(WorldDir, "AAEmu.World.exe"), "", WorldDir, new()
+        {
+            ["DAPROD_TWEAKS"] = Tweaks.FilePath,
+            // il .NET tiene meno memoria libera: GC non concorrente e compattazione più decisa
+            ["DOTNET_GCConserveMemory"] = "7", ["DOTNET_gcConcurrent"] = "0", ["DOTNET_TieredPGO"] = "0"
+        });
         try { if (p != null) p.PriorityClass = ProcessPriorityClass.AboveNormal; } catch { } // il World serve tutti i giocatori
     }
 
@@ -453,7 +462,7 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
         try
         {
             // con giocatori online carico meno zone alla volta, così il gioco non rallenta
-            for (var i = 0; i < 180 && Zones.Count(x => x.Running && !x.Loaded) >= (Zones.Any(x => PlayersIn(x) > 0) ? 3 : 6); i++) await Task.Delay(1000);
+            for (var i = 0; i < 180 && Zones.Count(x => x.Running && !x.Loaded) >= (PanelSettings.LowRam ? 2 : Zones.Any(x => PlayersIn(x) > 0) ? 3 : 6); i++) await Task.Delay(1000);
             if (!_wanted || !IsRunning("game") || z.Running || !z.Wanted) return;
             StartZoneProc(z);
         }

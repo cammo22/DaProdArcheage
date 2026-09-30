@@ -70,6 +70,9 @@ public sealed class PanelSettings
     [Category(Avanzate), Description("Token GitHub di sola lettura (serve se la repo è privata).")]
     public string GitHubToken { get; set; } = "";
     [Browsable(false)] public bool AutoAccount { get; set; }
+    [Browsable(false)] public bool Tuned { get; set; }
+    /// <summary>PC con poca RAM (meno di 24 GB): poche zone sempre accese, scarico più rapido, caricamenti uno o due alla volta.</summary>
+    public static bool LowRam => GC.GetGCMemoryInfo().TotalAvailableMemoryBytes < 24L * 1024 * 1024 * 1024;
     [Browsable(false)] public string GamePakDir { get; set; } = "";
     [Browsable(false)] public string ClientDownloadUrl { get; set; } = "";
 
@@ -92,6 +95,12 @@ public sealed class PanelSettings
         if (s.LaunchArgs.Contains("{pwhash}") || s.LaunchArgs.Contains("auth_serveraddr")) s.LaunchArgs = new PanelSettings().LaunchArgs;
         // tutte le zone del mondo (mare, isole, zone chiuse come Diamond Shores...): sono dinamiche, quindi non pesano finché nessuno ci va
         if (string.IsNullOrWhiteSpace(s.Zones) || !s.Zones.Contains("o_shining_shore_1")) s.Zones = ZoneCatalog.AllWorld;
+        if (!s.Tuned)
+        {
+            // primo avvio su questo PC: profilo in base alla RAM (si può cambiare a mano in Impostazioni)
+            s.Tuned = true;
+            if (LowRam) { s.AlwaysOnZones = "w_solzreed_1,w_solzreed_2,w_gweonid_forest_1"; s.ZoneIdleMinutes = 4; }
+        }
         if (string.IsNullOrEmpty(s.VpnEngine)) s.VpnEngine = string.IsNullOrEmpty(s.TailscaleAuthKey) ? "NetBird" : "Tailscale";
         if (string.IsNullOrEmpty(s.TokenSecret)) s.TokenSecret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         return s;

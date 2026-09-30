@@ -15,6 +15,7 @@ public static class Tweaks
         new("passFree", "Pass", "Pass: acquisto e potenziamento gratis", 1, "1 = comprare un ArchePass e passare al premium non costa oro né oggetti."),
         new("passPointMult", "Pass", "Pass: moltiplicatore dei punti", 1, "Punti pass guadagnati x questo numero (es. 5 = cinque volte più veloci)."),
         new("clientAllPasses", "Gioco (client)", "Pass: mostra tutti gli ArchePass", 1, "1 = nella finestra ArchePass compaiono tutti i pass, senza scadenza. Richiede \"Ricostruisci dati client\" (poi i giocatori riavviano il launcher)."),
+        new("geoData", "Memoria", "Navigazione precisa dei dungeon (GeoData)", 0, "1 = carica i dati di navigazione (circa 1 GB di RAM in più). 0 = usa le mappe di altezza. Serve riavvio del server."),
         new("laborRegenMult", "Labor", "Labor: velocità di recupero", 1, "Il labor si ricarica x questo numero (es. 10 = dieci volte più veloce, online e offline)."),
     ];
 

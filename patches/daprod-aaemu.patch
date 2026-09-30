@@ -502,6 +502,18 @@
  
          WorldIntegration.RelayUnitStateToZone?.Invoke(zoneId, mate.ObjId, body);
          mate.ZoneAnnouncedTo = zoneId;
+--- a/AAEmu.Commons/Utils/AAPak/AAPak.cs
++++ b/AAEmu.Commons/Utils/AAPak/AAPak.cs
+@@ -1084,6 +1084,9 @@
+             // if (PakType != PakFileType.PakTypeA) readOnly = true;
+             _header.LoadRawFAT();
+             _header.ReadFileTable();
++            // DaProd: a read-only pak does not need the raw file table any more once it is parsed (256 MB for game_pak)
++            if (readOnly)
++                _header.FAT = new MemoryStream();
+         }
+         else
+         {
 --- /dev/null
 +++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
 @@ -0,0 +1,131 @@
@@ -700,4 +712,57 @@
 +    public static double Get(string name, double fallback) => Values.TryGetValue(name, out var v) ? v : fallback;
 +
 +    public static bool On(string name) => Values.TryGetValue(name, out var v) && v != 0;
++}
+--- /dev/null
++++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdMemory.cs
+@@ -0,0 +1,50 @@
++using System.Runtime;
++using System.Runtime.CompilerServices;
++using AAEmu.Game.Core.Managers.World;
++using NLog;
++
++namespace AAEmu.World.Core;
++
++/// <summary>
++/// DaProd: il World tiene molta memoria libera "prenotata" (heap per oggetti grandi frammentato dopo il caricamento dei dati).
++/// Dopo l'avvio, e poi ogni tanto, compatta l'heap e restituisce la memoria al sistema. Di preferenza a server vuoto,
++/// perché la pausa dura circa un secondo.
++/// </summary>
++internal static class DaProdMemory
++{
++    private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
++    private static int _started;
++
++    [ModuleInitializer]
++    internal static void Init()
++    {
++        if (Interlocked.Exchange(ref _started, 1) == 1)
++            return;
++        _ = Task.Run(async () =>
++        {
++            await Task.Delay(TimeSpan.FromMinutes(3)); // a caricamento finito
++            var last = DateTime.MinValue;
++            while (true)
++            {
++                try
++                {
++                    var players = WorldManager.Instance.GetAllCharacters().Count;
++                    if (players == 0 || DateTime.UtcNow - last > TimeSpan.FromMinutes(60))
++                    {
++                        var before = GC.GetTotalMemory(false);
++                        GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
++                        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
++                        last = DateTime.UtcNow;
++                        Logger.Info("DAPROD_MEM compattazione heap: {0} MB -> {1} MB (giocatori {2})", before >> 20, GC.GetTotalMemory(false) >> 20, players);
++                    }
++                }
++                catch (Exception ex)
++                {
++                    Logger.Debug(ex, "DAPROD_MEM");
++                }
++
++                await Task.Delay(TimeSpan.FromMinutes(10));
++            }
++        });
++    }
 +}
