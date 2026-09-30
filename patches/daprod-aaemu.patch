@@ -1,0 +1,163 @@
+--- a/AAEmu.WorldServer/AAEmu.World/Program.cs
++++ b/AAEmu.WorldServer/AAEmu.World/Program.cs
+@@ -1621,9 +1621,18 @@
+             return;
+         }
+ 
++        // DaProd fix: le zone-istanza (dungeon, portali delle missioni) possono non avere ancora il GimmickManager.
++        // Prima questo NullReference chiudeva la connessione della zona e tutti tornavano alla selezione personaggio.
++        var gimmickManager = world.GimmickManager;
++        if (gimmickManager == null)
++        {
++            Logger.Warn("Gimmick flush skipped — GimmickManager not ready for zoneId={0} instanceId={1}", zoneId, instanceId);
++            return;
++        }
++
+         var sent = 0;
+         var skippedOtherZone = 0;
+-        foreach (var gimmick in world.GimmickManager.GetActiveGimmicks())
++        foreach (var gimmick in gimmickManager.GetActiveGimmicks())
+         {
+             if (gimmick?.Transform?.ZoneId != zoneId)
+             {
+@@ -1631,8 +1640,15 @@
+                 continue;
+             }
+ 
+-            zone.SendPacket(new WZGimmickCreatedPacket(gimmick.ToZoneWireSpawnData(), (int)zoneId));
+-            sent++;
++            try
++            {
++                zone.SendPacket(new WZGimmickCreatedPacket(gimmick.ToZoneWireSpawnData(), (int)zoneId));
++                sent++;
++            }
++            catch (Exception ex)
++            {
++                Logger.Warn(ex, "Gimmick flush: gimmick {0} skipped in zoneId={1}", gimmick.ObjId, zoneId);
++            }
+         }
+ 
+         Logger.Info(
+--- a/AAEmu.WorldServer/AAEmu.World/Core/Network/ZoneProtocolHandler.cs
++++ b/AAEmu.WorldServer/AAEmu.World/Core/Network/ZoneProtocolHandler.cs
+@@ -109,7 +109,16 @@
+                     var body = new PacketStream();
+                     if (bodyLen > 0)
+                         body.Replace(frame.Buffer, frame.Pos, bodyLen);
+-                    HandleZwPacket(connection, opcode, body, bodyLen);
++                    // DaProd fix: un pacchetto difettoso viene registrato ma NON chiude la zona
++                    // (chiuderla rimandava tutti i giocatori alla selezione personaggio).
++                    try
++                    {
++                        HandleZwPacket(connection, opcode, body, bodyLen);
++                    }
++                    catch (Exception ex)
++                    {
++                        Logger.Error(ex, "ZW packet opcode={0} failed on zone {1} (zoneId={2}) - connection kept", opcode, connection.Ip, connection.ZoneId);
++                    }
+                     break;
+             }
+         }
+--- a/AAEmu.Login/Core/PacketHandlers/C2L/CARequestWebAuthPacketHandler.cs
++++ b/AAEmu.Login/Core/PacketHandlers/C2L/CARequestWebAuthPacketHandler.cs
+@@ -29,8 +29,48 @@
+         if (string.IsNullOrEmpty(account))
+             account = packet.Auth ?? string.Empty;
+ 
+-        var flow = new TokenAuthFlow(loginController, account, session.Connection.Ip);
++        // DaProd: se DAPROD_TOKEN_SECRET e' impostata, il token del launcher deve essere firmato dal pannello
++        // (HMAC-SHA256 con scadenza). Senza questo controllo bastava conoscere un nome utente per entrare.
++        IAuthenticationFlow flow = DaProdToken.IsValid(packet.Auth, account)
++            ? new TokenAuthFlow(loginController, account, session.Connection.Ip)
++            : new DeniedFlow();
+         await session.AuthenticateAsync(flow, cancellationToken);
++    }
++
++    private sealed class DeniedFlow : IAuthenticationFlow
++    {
++        public Task<AuthFlowResult> StartAsync(ILoginClient client, CancellationToken cancellationToken) =>
++            Task.FromResult<AuthFlowResult>(new AuthFlowResult.Denied(LoginDeniedReason.BadAccount));
++    }
++
++    /// <summary>Token formato "{scadenzaUnix}.{hex(HMAC-SHA256(secret, utente|scadenza))}".</summary>
++    private static class DaProdToken
++    {
++        private static readonly string Secret = Environment.GetEnvironmentVariable("DAPROD_TOKEN_SECRET") ?? "";
++
++        public static bool IsValid(string? auth, string account)
++        {
++            if (Secret.Length == 0)
++                return true; // nessun segreto configurato: comportamento originale
++
++            try
++            {
++                using var doc = JsonDocument.Parse(auth ?? "");
++                if (!doc.RootElement.TryGetProperty("strUserToken", out var tk) || tk.GetString() is not { } token)
++                    return false;
++                var parts = token.Split('.');
++                if (parts.Length != 2 || !long.TryParse(parts[0], out var exp) || exp < DateTimeOffset.UtcNow.ToUnixTimeSeconds())
++                    return false;
++                using var h = new System.Security.Cryptography.HMACSHA256(System.Text.Encoding.UTF8.GetBytes(Secret));
++                var expected = Convert.ToHexString(h.ComputeHash(System.Text.Encoding.UTF8.GetBytes($"{account}|{exp}"))).ToLowerInvariant();
++                return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
++                    System.Text.Encoding.ASCII.GetBytes(expected), System.Text.Encoding.ASCII.GetBytes(parts[1].ToLowerInvariant()));
++            }
++            catch
++            {
++                return false;
++            }
++        }
+     }
+ 
+     /// <summary>
+--- a/AAEmu.WorldServer/AAEmu.World/Core/Relay/PlayerEnterService.cs
++++ b/AAEmu.WorldServer/AAEmu.World/Core/Relay/PlayerEnterService.cs
+@@ -33,6 +33,8 @@
+             Logger.Warn(
+                 "EnterZone refused: no ZoneLoaded for character bcId={0} zoneId={1}",
+                 bcId, ResolveCharacterZoneId(bcId));
++            // DaProd: il pannello legge questa riga e carica la zona al volo (zone dinamiche)
++            Logger.Info("DAPROD_ZONE_NEED zone={0} inst=0", ResolveCharacterZoneId(bcId));
+             return false;
+         }
+ 
+@@ -50,6 +52,7 @@
+         Logger.Info(
+             "WZUnitState enter → zoneId={0} ip={1} bcHint={2} bodyLen={3}",
+             zone.ZoneId, zone.Ip, bcId, unitStateBody.Length);
++        Logger.Info("DAPROD_ZONE_ENTER zone={0} inst={1} bc={2}", zone.ZoneId, zone.InstanceId, bcId);
+         return true;
+     }
+ 
+@@ -62,6 +65,7 @@
+         zone.SendPacket(new WZUnitRemovedPacket(bcId));
+         zone.Units.TryRemove(bcId);
+         Logger.Info("WZUnitRemoved leave → zoneId={0} ip={1} bcId={2}", zone.ZoneId, zone.Ip, bcId);
++        Logger.Info("DAPROD_ZONE_LEAVE zone={0} inst={1} bc={2}", zone.ZoneId, zone.InstanceId, bcId);
+     }
+ 
+     /// <summary>
+@@ -82,6 +86,7 @@
+             Logger.Info(
+                 "Zone handoff leave → oldZoneId={0} instanceId={1} bcId={2}",
+                 oldZone.ZoneId, oldZone.InstanceId, bcId);
++            Logger.Info("DAPROD_ZONE_LEAVE zone={0} inst={1} bc={2}", oldZone.ZoneId, oldZone.InstanceId, bcId);
+         }
+         else if (oldZoneId != 0)
+         {
+@@ -94,6 +99,7 @@
+             Logger.Warn(
+                 "Zone handoff refused: no ZoneLoaded for newZoneId={0} instanceId={1} bcId={2}",
+                 newZoneId, newInstanceId, bcId);
++            Logger.Info("DAPROD_ZONE_NEED zone={0} inst={1}", newZoneId, newInstanceId);
+             return false;
+         }
+ 
+@@ -111,6 +117,7 @@
+         Logger.Info(
+             "Zone handoff enter → newZoneId={0} bcId={1} bodyLen={2}",
+             newZone.ZoneId, bcId, unitStateBody.Length);
++        Logger.Info("DAPROD_ZONE_ENTER zone={0} inst={1} bc={2}", newZone.ZoneId, newZone.InstanceId, bcId);
+         return true;
+     }
+ 

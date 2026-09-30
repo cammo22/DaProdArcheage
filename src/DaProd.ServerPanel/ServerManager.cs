@@ -1,55 +1,108 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using MySqlConnector;
 
 namespace DaProd.ServerPanel;
 
-/// <summary>Avvia/ferma MySQL, Login e Game; prepara database e configurazioni.</summary>
-public sealed class ServerManager(PanelSettings s, Action<string, string> log)
+/// <summary>Una zona del mondo (un processo AAEmu.ZoneHost).</summary>
+public sealed class ZoneInfo
+{
+    public required string Name { get; init; }
+    public int Instance { get; init; }
+    public uint ZoneId { get; init; }
+    public int Port { get; init; }
+    public string Key => Instance > 0 ? $"{Name}:{Instance}" : Name;
+    public Process? Proc;
+    public bool Loaded;
+    public int Restarts;
+    public bool GaveUp;
+    /// <summary>Deve essere caricata adesso (sempre attiva, oppure richiesta da un giocatore).</summary>
+    public bool Wanted;
+    public bool AlwaysOn;
+    public int Group;
+    public DateTime? EmptySince;
+    public DateTime? Started;
+    public readonly List<DateTime> RestartLog = [];
+    public bool Running => Proc is { HasExited: false };
+}
+
+/// <summary>
+/// Avvia e sorveglia MySQL, Login, World e le zone. Se un servizio si ferma lo riavvia da solo,
+/// e con il job object nessun processo resta aperto se il pannello si chiude.
+/// </summary>
+public sealed partial class ServerManager(PanelSettings s, Action<string, string> log) : IDisposable
 {
     readonly Dictionary<string, Process> _procs = new();
+    readonly Dictionary<string, ZoneInfo> _zones = new(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> _stopping = [];
+    readonly Dictionary<string, List<DateTime>> _restartLog = new();
+    readonly object _lock = new();
+    readonly JobObject _job = new();
+    CancellationTokenSource? _watch;
+    bool _wanted;
+    DateTime _serverStart = DateTime.Now;
 
-    static string ServerDir => Path.Combine(PanelSettings.Root, "server");
+    public static string ServerDir => Path.Combine(PanelSettings.Root, "server");
     static string MySqlData => Path.Combine(ServerDir, "mysql-data");
     static string LoginDir => Path.Combine(ServerDir, "bin", "login");
     static string GameDir => Path.Combine(ServerDir, "bin", "game");
-    static string SqlDir => Path.Combine(ServerDir, "sql");
     static string WorldDir => Path.Combine(ServerDir, "bin", "world");
+    static string SqlDir => Path.Combine(ServerDir, "sql");
     static string ZoneFiles => Path.Combine(ServerDir, "zonehost");
-    /// <summary>
-    /// Copia del client solo per il server di zona: Bin64 + game_pak estratto in game\.
-    /// Il client in gioco\ resta intatto per i launcher degli amici.
-    /// </summary>
-    static string ZoneClient => Path.Combine(ServerDir, "zoneclient");
+    /// <summary>Copia del client solo per il server di zona: Bin64 + game_pak estratto. Il client in gioco\ resta intatto.</summary>
+    public static string ZoneClient => Path.Combine(ServerDir, "zoneclient");
     static string Bin64 => Path.Combine(ZoneClient, "Bin64");
+    public static string BackupDir => Path.Combine(ServerDir, "backups");
 
-    /// <summary>Quando è stato avviato ogni processo (per capire se è ancora "in caricamento").</summary>
-    public DateTime? StartedAt(string name) => _procs.TryGetValue(name, out var p) && !p.HasExited ? p.StartTime : null;
-    public Process? Proc(string name) => _procs.TryGetValue(name, out var p) && !p.HasExited ? p : null;
+    /// <summary>Cosa sta facendo di lungo (estrazione mappe, backup...): mostrato nella scheda di stato.</summary>
+    public string Activity { get; set; } = "";
     public int Crashes { get; private set; }
-    readonly HashSet<string> _stopping = [];
+    public bool Wanted => _wanted;
 
-    /// <summary>Copia nel client i file del server di zona (ZoneHost, dll, database).</summary>
-    async Task PrepareZoneHostAsync()
+    public bool IsRunning(string name) => _procs.TryGetValue(name, out var p) && !p.HasExited;
+    public Process? Proc(string name) => _procs.TryGetValue(name, out var p) && !p.HasExited ? p : null;
+    public IReadOnlyList<ZoneInfo> Zones { get { lock (_lock) return _zones.Values.OrderBy(z => z.Key).ToList(); } }
+    public int ZonesTotal { get { lock (_lock) return _zones.Count(z => z.Value.Wanted && !z.Value.GaveUp); } }
+    public int ZonesLoaded { get { lock (_lock) return _zones.Count(z => z.Value.Wanted && z.Value.Loaded && z.Value.Running); } }
+    public int ZonesFailed { get { lock (_lock) return _zones.Count(z => z.Value.GaveUp); } }
+
+    string MySqlBin => s.ResolveMySqlBin();
+    public string ConnString(string db = "") =>
+        $"Server=127.0.0.1;Port={s.MySqlPort};User ID=root;Database={db};SslMode=None;AllowUserVariables=true;Default Command Timeout=120";
+
+    // =====================================================================
+    // Preparazione (prima volta)
+    // =====================================================================
+
+    /// <summary>Prepara la copia del client per le zone: Bin64, game_pak estratto, ZoneHost, database, dedicated.cfg.</summary>
+    public async Task PrepareZoneClientAsync()
     {
         var clientBin = Path.Combine(s.ClientDir, "Bin64");
         if (!Directory.Exists(clientBin)) { log("zone", $"Client non trovato in {s.ClientDir}"); return; }
         if (!Directory.Exists(Bin64))
         {
-            log("zone", "Copio Bin64 del client per il server di zona...");
+            Activity = "Copio i file del client per le mappe...";
             await Task.Run(() => CopyDir(clientBin, Bin64));
         }
-        // prima volta: estraggo game_pak (lungo, ma una volta sola; riprende se interrotto)
         var pak = Path.Combine(s.ClientDir, "game_pak");
         var extractor = Path.Combine(ServerDir, "tools", "PakExtract", "PakExtract.exe");
-        if (!File.Exists(Path.Combine(ZoneClient, "game", ".estratto")) && File.Exists(pak) && File.Exists(extractor))
+        var marker = Path.Combine(ZoneClient, "game", ".estratto");
+        if (!File.Exists(marker) && File.Exists(pak) && File.Exists(extractor))
         {
-            log("zone", "Estraggo game_pak per il server di zona: può richiedere 20-60 minuti la prima volta...");
-            await RunToEndAsync(extractor, $"\"{pak}\" \"{ZoneClient}\"", "zone");
-            File.WriteAllText(Path.Combine(ZoneClient, "game", ".estratto"), DateTime.Now.ToString("s"));
+            log("zone", "Estraggo game_pak per le mappe: 20-40 minuti, una volta sola (riprende se interrotto).");
+            Activity = "Preparo le mappe (0%)...";
+            await RunToEndAsync(extractor, $"\"{pak}\" \"{ZoneClient}\"", "mappe", line =>
+            {
+                var m = Regex.Match(line, @"PROGRESS \d+/\d+ (\d+)%");
+                if (m.Success) Activity = $"Preparo le mappe ({m.Groups[1].Value}%)...";
+            });
+            Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
+            File.WriteAllText(marker, DateTime.Now.ToString("s"));
         }
         foreach (var f in new[] { "AAEmu.ZoneHost.exe", "x2game-dev_dedicate.dll" })
         {
@@ -60,30 +113,27 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         var dbSrc = Path.Combine(ZoneFiles, "game_decrypted.sqlite3");
         if (File.Exists(dbSrc) && (!File.Exists(db) || new FileInfo(db).Length != new FileInfo(dbSrc).Length))
         { Directory.CreateDirectory(Path.GetDirectoryName(db)!); File.Copy(dbSrc, db, true); }
+        // il database del mondo serve anche a Game e World come compact.sqlite3 (come da guida)
+        foreach (var d in new[] { GameDir, WorldDir })
+        {
+            var dst = Path.Combine(d, "Data", "compact.sqlite3");
+            if (File.Exists(dbSrc) && (!File.Exists(dst) || new FileInfo(dst).Length != new FileInfo(dbSrc).Length))
+            { Directory.CreateDirectory(Path.GetDirectoryName(dst)!); File.Copy(dbSrc, dst, true); }
+        }
         WriteDedicatedCfg();
+        Activity = "";
     }
 
-    /// <summary>
-    /// game\config\dedicated.cfg come da guida: il database va indicato qui, perché da riga di comando
-    /// arriva troppo tardi e il motore apre il compact.sqlite3 del pak (a cui mancano tabelle).
-    /// </summary>
+    /// <summary>game\config\dedicated.cfg come da guida (il database va indicato qui, da riga di comando arriva troppo tardi).</summary>
     void WriteDedicatedCfg()
     {
         var cfg = Path.Combine(ZoneClient, "game", "config", "dedicated.cfg");
         Directory.CreateDirectory(Path.GetDirectoryName(cfg)!);
         const string marker = "-- DaProd";
         var lines = File.Exists(cfg) ? File.ReadAllLines(cfg).TakeWhile(l => l != marker).ToList() : [];
-        lines.AddRange([
-            marker,
-            "sys_dedicated_server = 1",
-            "world_serveraddr = \"127.0.0.1\"",
-            "world_serverport = 1240",
-            "db_location = \"game/db/game_decrypted.sqlite3\"",
-            "locale = \"en_us\"",
-            "cl_account_id = 1",
-            "auth_serveraddr = 127.0.0.1",
-            $"auth_serverport = {s.LoginPort}"
-        ]);
+        lines.AddRange([marker, "sys_dedicated_server = 1", "world_serveraddr = \"127.0.0.1\"", "world_serverport = 1240",
+            "db_location = \"game/db/game_decrypted.sqlite3\"", "locale = \"en_us\"", "cl_account_id = 1",
+            "auth_serveraddr = 127.0.0.1", $"auth_serverport = {s.LoginPort}"]);
         File.WriteAllLines(cfg, lines);
     }
 
@@ -97,20 +147,16 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         }
     }
 
-    public string ConnString(string db = "") =>
-        $"Server=127.0.0.1;Port={s.MySqlPort};User ID=root;Database={db};SslMode=None;AllowUserVariables=true";
-
-    public bool IsRunning(string name) => _procs.TryGetValue(name, out var p) && !p.HasExited;
-
-    // ---------- Setup ----------
-
+    /// <summary>Crea il database MySQL e importa le tabelle di Login e Game, se mancano.</summary>
     public async Task FirstSetupAsync()
     {
+        var mysqld = Path.Combine(MySqlBin, "mysqld.exe");
+        if (!File.Exists(mysqld)) throw new Exception("MySQL non trovato. Serve il pacchetto dati oppure MySQL Server 8.4 installato.");
         if (!Directory.Exists(MySqlData))
         {
-            log("mysql", "Inizializzo il database MySQL (prima volta)...");
-            await RunToEndAsync(Path.Combine(s.MySqlBinDir, "mysqld.exe"),
-                $"--initialize-insecure --datadir=\"{MySqlData}\" --console", "mysql");
+            Activity = "Creo il database (prima volta)...";
+            log("mysql", "Inizializzo MySQL (prima volta)...");
+            await RunToEndAsync(mysqld, $"--initialize-insecure --basedir=\"{Path.GetDirectoryName(MySqlBin)}\" --datadir=\"{MySqlData}\" --console", "mysql");
         }
         await StartMySqlAsync();
 
@@ -120,53 +166,87 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
             foreach (var db in new[] { "aaemu_login", "aaemu_game" })
             {
                 var exists = await new MySqlCommand($"SHOW DATABASES LIKE '{db}'", c).ExecuteScalarAsync() != null;
-                if (exists) { log("mysql", $"{db} già presente, salto."); continue; }
+                if (exists) continue;
+                Activity = $"Importo le tabelle di {db}...";
                 await new MySqlCommand($"CREATE DATABASE `{db}` CHARACTER SET utf8mb4", c).ExecuteNonQueryAsync();
-                log("mysql", $"Importo {db}.sql ...");
-                await RunToEndAsync(Path.Combine(s.MySqlBinDir, "mysql.exe"),
+                await RunToEndAsync(Path.Combine(MySqlBin, "mysql.exe"),
                     $"-uroot -h127.0.0.1 -P{s.MySqlPort} {db} -e \"source {Path.Combine(SqlDir, db + ".sql").Replace('\\', '/')}\"", "mysql");
             }
         }
         WriteConfigs();
-        log("panel", "Setup completato.");
+        Activity = "";
+        log("panel", "Setup del database completato.");
+    }
+
+    // =====================================================================
+    // Configurazioni (Login, Game, World)
+    // =====================================================================
+
+    static string RatesFile => Path.Combine(PanelSettings.DataDir, "rates.json");
+
+    /// <summary>Rate e opzioni del mondo (sezione "World" della configurazione di AAEmu).</summary>
+    public Dictionary<string, string> LoadRates()
+    {
+        var d = new Dictionary<string, string>
+        {
+            ["ExpRate"] = "100", ["LootRate"] = "1", ["GoldLootMultiplier"] = "100", ["HonorRate"] = "1", ["PvpHonorRate"] = "1",
+            ["VocationRate"] = "1", ["GrowthRate"] = "1", ["ActabilityRate"] = "1", ["PlayerLevelCap"] = "55", ["AutoSaveInterval"] = "5", ["MOTD"] = ""
+        };
+        try
+        {
+            if (File.Exists(RatesFile))
+                foreach (var (k, v) in JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(RatesFile)) ?? [])
+                    d[k] = v;
+        }
+        catch { }
+        return d;
+    }
+
+    public void SaveRates(Dictionary<string, string> rates)
+    {
+        Directory.CreateDirectory(PanelSettings.DataDir);
+        File.WriteAllText(RatesFile, JsonSerializer.Serialize(rates, new JsonSerializerOptions { WriteIndented = true }));
     }
 
     public void WriteConfigs()
     {
-        var db = new JsonObject
+        JsonNode Db(string name) => new JsonObject
         {
-            ["Host"] = "127.0.0.1", ["Port"] = s.MySqlPort.ToString(), ["User"] = "root",
-            ["Password"] = "", ["SslMode"] = "None"
+            ["Host"] = "127.0.0.1", ["Port"] = s.MySqlPort.ToString(), ["User"] = "root", ["Password"] = "", ["SslMode"] = "None", ["Database"] = name
         };
-        JsonNode Db(string name) { var o = db.DeepClone(); o["Database"] = name; return o; }
+        var host = s.UseTailscale ? "127.0.0.1" : s.PublicIp; // con Tailscale il launcher inoltra le porte su localhost
 
         var login = new JsonObject
         {
             ["AutoAccount"] = s.AutoAccount,
             ["Network"] = new JsonObject { ["Host"] = "*", ["Port"] = s.LoginPort },
             ["Connections"] = new JsonObject { ["MySQLProvider"] = Db("aaemu_login") },
-            ["GameServers"] = new JsonArray(new JsonObject
-            {
-                // Con Tailscale il launcher inoltra le porte su 127.0.0.1, quindi il client deve andare a localhost
-                ["ID"] = 1, ["Name"] = s.ServerName, ["Host"] = s.UseTailscale ? "127.0.0.1" : s.PublicIp, ["Port"] = s.GamePort
-            })
+            ["GameServers"] = new JsonArray(new JsonObject { ["ID"] = 1, ["Name"] = s.ServerName, ["Host"] = host, ["Port"] = s.GamePort })
         };
+
+        var world = new JsonObject();
+        foreach (var (k, v) in LoadRates())
+        {
+            if (k == "MOTD") world[k] = v;
+            else if (double.TryParse(v.Replace(',', '.'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n)) world[k] = n;
+        }
         var game = new JsonObject
         {
             ["Network"] = new JsonObject { ["Host"] = "*", ["Port"] = s.GamePort },
             ["LoginNetwork"] = new JsonObject { ["Host"] = "127.0.0.1", ["Port"] = "1234" },
             ["Connections"] = new JsonObject { ["MySQLProvider"] = Db("aaemu_game") },
             ["DebugInfo"] = false,
+            ["World"] = world
         };
-        if (!string.IsNullOrWhiteSpace(s.GamePakDir))
-            game["ClientData"] = new JsonObject { ["Sources"] = new JsonArray(s.GamePakDir) };
+        var pak = Path.Combine(s.ClientDir, "game_pak");
+        if (File.Exists(pak)) game["ClientData"] = new JsonObject { ["Sources"] = new JsonArray(pak) };
 
-        // World = logica di gioco (carica AAEmu.Game da GameContentRoot) + avvia lo Zone Host che carica le mappe
-        var world = new JsonObject
+        // World = logica di gioco (carica AAEmu.Game da GameContentRoot); le zone le avvia il pannello
+        var worldCfg = new JsonObject
         {
             ["GameContentRoot"] = GameDir,
             ["ZoneGameDataRoot"] = Path.Combine(ZoneClient, "game"),
-            ["PublicNetwork"] = new JsonObject { ["Host"] = s.UseTailscale ? "127.0.0.1" : s.PublicIp, ["Port"] = s.GamePort },
+            ["PublicNetwork"] = new JsonObject { ["Host"] = host, ["Port"] = s.GamePort },
             ["ZoneHost"] = new JsonObject
             {
                 ["Enabled"] = true,
@@ -180,97 +260,9 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         var o = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(Path.Combine(LoginDir, "Config.Local.json"), login.ToJsonString(o));
         File.WriteAllText(Path.Combine(GameDir, "Config.Local.json"), game.ToJsonString(o));
-        if (Directory.Exists(WorldDir)) File.WriteAllText(Path.Combine(WorldDir, "Config.Local.json"), world.ToJsonString(o));
+        if (Directory.Exists(WorldDir)) File.WriteAllText(Path.Combine(WorldDir, "Config.Local.json"), worldCfg.ToJsonString(o));
         foreach (var d in new[] { LoginDir, GameDir, WorldDir }) QuietLogs(d);
-        log("panel", "Configurazioni scritte per Login, Game e World.");
     }
-
-    // ---------- Processi ----------
-
-    public async Task StartMySqlAsync()
-    {
-        if (IsRunning("mysql")) return;
-        Start("mysql", Path.Combine(s.MySqlBinDir, "mysqld.exe"),
-            $"--datadir=\"{MySqlData}\" --port={s.MySqlPort} --bind-address=127.0.0.1 --console", s.MySqlBinDir);
-        for (var i = 0; i < 30; i++)
-        {
-            try { await using var c = new MySqlConnection(ConnString()); await c.OpenAsync(); return; }
-            catch { await Task.Delay(1000); }
-        }
-        throw new Exception("MySQL non risponde dopo 30 secondi.");
-    }
-
-    public async Task StartAllAsync()
-    {
-        await StartMySqlAsync();
-        WriteConfigs();
-        await PrepareZoneHostAsync();
-        if (!IsRunning("login")) Start("login", Path.Combine(LoginDir, "AAEmu.Login.exe"), "", LoginDir);
-        await Task.Delay(2000);
-        // "game" = AAEmu.World (contiene la logica di gioco)
-        if (!IsRunning("game")) Start("game", Path.Combine(WorldDir, "AAEmu.World.exe"), "", WorldDir);
-        _ = Task.Run(async () =>
-        {
-            try { await StartZonesWhenWorldReady(); }
-            catch (Exception ex) { log("zone", "Avvio zone fallito: " + ex); }
-        });
-    }
-
-    /// <summary>
-    /// Le mappe del mondo aperto le carica AAEmu.ZoneHost (lo Zone Manager della guida):
-    /// appena il World ascolta sulla 1240 avvio un host per ogni zona in Impostazioni > Zones.
-    /// </summary>
-    async Task StartZonesWhenWorldReady()
-    {
-        for (var i = 0; i < 300 && !PortListening(1240); i++) await Task.Delay(1000);
-        if (!IsRunning("game")) return;
-        var exe = Path.Combine(Bin64, "AAEmu.ZoneHost.exe");
-        var zones = s.Zones.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        for (var i = 0; i < zones.Length; i++)
-        {
-            var z = zones[i];
-            if (IsRunning("zone:" + z)) continue;
-            var logDir = Path.Combine(ServerDir, "logs", "zone", z);
-            Directory.CreateDirectory(logDir);
-            var args = $"-dedicated +world_ip 127.0.0.1 +world_port 1240 +world_serveraddr 127.0.0.1 +world_serverport 1240 " +
-                       $"+zone {z} +sv_map {z} +instance 0 +sv_port {65000 + i} +db_location game/db/game_decrypted.sqlite3 " +
-                       "+e_render 0 +r_Driver Null +npc_move_skip_standing 0 +npc_move_skip_disabledAI 0 +npc_movement_skip 0 +ai_systemupdate 1";
-            Start("zone:" + z, exe, args, Bin64, new()
-            {
-                ["AAEMU_ZONE_DLL"] = Path.Combine(Bin64, "x2game-dev_dedicate.dll"),
-                ["AAEMU_ZONE_SAVE_DIR"] = logDir,
-                ["AAEMU_ZONE_LOG_NAME"] = z
-            });
-            _ = HideWindowsAsync(Proc("zone:" + z));
-        }
-    }
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
-    delegate bool EnumProc(IntPtr h, IntPtr l);
-
-    /// <summary>Lo Zone Host apre finestre (console e "Gweonid"): per 3 minuti le nascondo appena compaiono.</summary>
-    static async Task HideWindowsAsync(Process? p)
-    {
-        if (p == null) return;
-        for (var i = 0; i < 180 && !p.HasExited; i++)
-        {
-            EnumWindows((h, _) =>
-            {
-                GetWindowThreadProcessId(h, out var pid);
-                if (pid == p.Id && IsWindowVisible(h)) ShowWindow(h, 0);
-                return true;
-            }, IntPtr.Zero);
-            await Task.Delay(1000);
-        }
-    }
-
-    public IEnumerable<string> ZoneNames => _procs.Keys.Where(k => k.StartsWith("zone:")).ToList();
-
-    static bool PortListening(int port) =>
-        System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(e => e.Port == port);
 
     /// <summary>Log a livello INFO: con TRACE il World scrive migliaia di righe al secondo e rallenta molto.</summary>
     static void QuietLogs(string dir)
@@ -278,120 +270,515 @@ public sealed class ServerManager(PanelSettings s, Action<string, string> log)
         var f = Path.Combine(dir, "NLog.config");
         if (!File.Exists(f)) return;
         var t = File.ReadAllText(f);
-        var q = System.Text.RegularExpressions.Regex.Replace(t, "minlevel=\"(Trace|Debug)\"", "minlevel=\"Info\"", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var q = Regex.Replace(t, "minlevel=\"(Trace|Debug)\"", "minlevel=\"Info\"", RegexOptions.IgnoreCase);
         if (q != t) File.WriteAllText(f, q);
+    }
+
+    // =====================================================================
+    // Avvio / arresto
+    // =====================================================================
+
+    public async Task StartMySqlAsync()
+    {
+        if (IsRunning("mysql")) return;
+        var basedir = Path.GetDirectoryName(MySqlBin)!;
+        Start("mysql", Path.Combine(MySqlBin, "mysqld.exe"),
+            $"--basedir=\"{basedir}\" --datadir=\"{MySqlData}\" --port={s.MySqlPort} --bind-address=127.0.0.1 --console", MySqlBin);
+        for (var i = 0; i < 60; i++)
+        {
+            try { await using var c = new MySqlConnection(ConnString()); await c.OpenAsync(); return; }
+            catch { await Task.Delay(1000); }
+        }
+        throw new Exception("MySQL non risponde dopo 60 secondi.");
+    }
+
+    void StartLogin() =>
+        Start("login", Path.Combine(LoginDir, "AAEmu.Login.exe"), "", LoginDir, new() { ["DAPROD_TOKEN_SECRET"] = s.TokenSecret });
+
+    void StartWorld() => Start("game", Path.Combine(WorldDir, "AAEmu.World.exe"), "", WorldDir);
+
+    public async Task StartAllAsync()
+    {
+        if (s.Maintenance) { log("panel", "Manutenzione attiva: Login e World restano spenti."); return; }
+        _wanted = true;
+        _serverStart = DateTime.Now;
+        var killed = await Task.Run(() => JobObject.KillStale(PanelSettings.Root));
+        if (killed > 0) log("panel", $"Chiusi {killed} processi rimasti aperti da una sessione precedente.");
+        await FirstSetupAsync();
+        await PrepareZoneClientAsync();
+        WriteConfigs();
+        RegisterZones();
+        if (!IsRunning("login")) StartLogin();
+        await Task.Delay(2000);
+        if (!IsRunning("game")) StartWorld();
+        _ = Task.Run(StartZonesWhenWorldReady);
+        StartWatchdog();
     }
 
     public void StopAll()
     {
-        foreach (var n in ZoneNames.Concat(["game", "login", "mysql"])) Stop(n);
-        foreach (var z in Process.GetProcessesByName("AAEmu.ZoneHost")) try { z.Kill(); } catch { }
+        _wanted = false;
+        _watch?.Cancel();
+        foreach (var z in Zones) StopZoneProc(z);
+        Stop("game"); Stop("login");
+        StopMySql();
+        foreach (var z in Process.GetProcessesByName("AAEmu.ZoneHost")) try { if (z.MainModule?.FileName?.StartsWith(ServerDir, StringComparison.OrdinalIgnoreCase) == true) z.Kill(); } catch { }
+    }
+
+    public async Task RestartAsync()
+    {
+        StopAll();
+        await Task.Delay(2500);
+        await StartAllAsync();
+    }
+
+    void StopMySql()
+    {
+        if (!IsRunning("mysql")) return;
+        try
+        {
+            var a = Process.Start(new ProcessStartInfo(Path.Combine(MySqlBin, "mysqladmin.exe"), $"-uroot -h127.0.0.1 -P{s.MySqlPort} shutdown")
+            { UseShellExecute = false, CreateNoWindow = true });
+            a?.WaitForExit(20000);
+        }
+        catch { }
+        Stop("mysql");
     }
 
     public void Stop(string name)
     {
         if (!_procs.TryGetValue(name, out var p)) return;
-        _stopping.Add(name);
+        lock (_stopping) _stopping.Add(name);
         try { if (!p.HasExited) { p.Kill(true); p.WaitForExit(5000); } } catch { }
         _procs.Remove(name);
-        _stopping.Remove(name);
+        lock (_stopping) _stopping.Remove(name);
         log(name, "Fermato.");
     }
 
-    void Start(string name, string exe, string args, string cwd, Dictionary<string, string>? env = null)
+    Process? Start(string name, string exe, string args, string cwd, Dictionary<string, string>? env = null)
     {
-        if (!File.Exists(exe)) { log(name, $"File mancante: {exe}"); return; }
-        var psi = new ProcessStartInfo(exe, args)
+        if (!File.Exists(exe)) { log(name, $"File mancante: {exe}"); return null; }
+                var psi = new ProcessStartInfo(exe, args)
         {
-            // lo Zone Host si crea la sua console (AllocConsole): con CreateNoWindow fallisce, quindi finestra nascosta
-            WorkingDirectory = cwd, UseShellExecute = false, CreateNoWindow = !name.StartsWith("zone:"), WindowStyle = ProcessWindowStyle.Hidden,
+            WorkingDirectory = cwd, UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true,
-            // lo Zone Host è un programma nativo: con l'input rediretto si chiude subito
-            RedirectStandardInput = !name.StartsWith("zone:")
+            RedirectStandardInput = true
         };
         foreach (var (k, v) in env ?? []) psi.Environment[k] = v;
         var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        // TRACE/DEBUG non vanno a schermo: intasano il pannello
-        void Out(string? l) { if (l != null && !l.Contains("[TRACE]") && !l.Contains("[DEBUG]")) log(name, l); }
+        void Out(string? l)
+        {
+            if (l == null || l.Contains("[TRACE]") || l.Contains("[DEBUG]")) return;
+            if (name == "game") ParseWorldLine(l);
+            log(name, l);
+        }
         p.OutputDataReceived += (_, e) => Out(e.Data);
         p.ErrorDataReceived += (_, e) => Out(e.Data);
-        p.Exited += (_, _) =>
-        {
-            if (_stopping.Contains(name)) return;
-            Crashes++;
-            log(name, $"ARRESTO IMPREVISTO (codice {SafeExit(p)}). Controlla i log in server\\bin\\...\\Logs");
-        };
+        p.Exited += (_, _) => OnExited(name, p);
         p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine();
+        _job.Add(p);
         _procs[name] = p;
         log(name, "Avviato.");
+        return p;
     }
 
-    static string SafeExit(Process p) { try { return p.ExitCode.ToString(); } catch { return "?"; } }
+    void OnExited(string name, Process p)
+    {
+        bool expected; lock (_stopping) expected = _stopping.Contains(name) || !_wanted;
+        if (name.StartsWith("zone:"))
+        {
+            lock (_lock) { if (_zones.TryGetValue(name[5..], out var z)) z.Loaded = false; }
+            if (expected) return;
+        }
+        else if (expected) return;
+        Crashes++;
+        string code; try { code = p.ExitCode.ToString(); } catch { code = "?"; }
+        log(name, $"ARRESTO IMPREVISTO (codice {code}).{(s.Watchdog ? " Lo riavvio da solo." : "")}");
+    }
 
-    /// <summary>Invia un comando alla console del processo (es. comandi admin del Game server).</summary>
+    // =====================================================================
+    // Zone
+    // =====================================================================
+
+    void RegisterZones()
+    {
+        lock (_lock)
+        {
+            var wanted = s.Zones.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(x =>
+            {
+                var p = x.Split(':');
+                return (name: p[0], inst: p.Length > 1 && int.TryParse(p[1], out var n) ? n : 0);
+            }).ToList();
+            var always = s.AlwaysOnZones.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var (name, inst) in wanted)
+            {
+                var z = new ZoneInfo { Name = name, Instance = inst, ZoneId = ZoneCatalog.IdOf(name), Port = 60100 + _zones.Count, Group = ZoneCatalog.GroupOf(name) };
+                if (!_zones.TryGetValue(z.Key, out var ex)) _zones[z.Key] = ex = z;
+                ex.AlwaysOn = !s.DynamicZones || always.Contains(name);
+                if (!ex.Running) { ex.Wanted = ex.AlwaysOn; ex.Started = null; ex.GaveUp = false; ex.Restarts = 0; ex.EmptySince = null; ex.Loaded = false; }
+            }
+            lock (_players) _players.Clear();
+            foreach (var k in _zones.Keys.Where(k => !wanted.Any(w => (w.inst > 0 ? $"{w.name}:{w.inst}" : w.name).Equals(k, StringComparison.OrdinalIgnoreCase))).ToList())
+                if (!_zones[k].Running) _zones.Remove(k);
+        }
+    }
+
+    async Task StartZonesWhenWorldReady()
+    {
+        for (var i = 0; i < 300 && _wanted && !PortListening(1240); i++) await Task.Delay(1000);
+        if (!IsRunning("game")) return;
+        foreach (var z in Zones.Where(z => z.Wanted))
+        {
+            if (!_wanted || !IsRunning("game")) return;
+            if (z.Running || z.GaveUp) continue;
+            await StartZoneSafeAsync(z);
+            await Task.Delay(1500);
+        }
+    }
+
+    /// <summary>Avvia una zona aspettando che non ce ne siano più di 6 in caricamento: niente picchi di CPU e RAM.</summary>
+    async Task StartZoneSafeAsync(ZoneInfo z)
+    {
+        for (var i = 0; i < 180 && Zones.Count(x => x.Running && !x.Loaded) >= 6; i++) await Task.Delay(1000);
+        if (!_wanted || !IsRunning("game") || z.Running || !z.Wanted) return;
+        StartZoneProc(z);
+    }
+
+    // ---- zone dinamiche: il World scrive DAPROD_ZONE_ENTER / LEAVE / NEED, qui le leggo
+    readonly Dictionary<string, HashSet<uint>> _players = new();
+    static readonly Regex ZoneEvRx = new(@"DAPROD_ZONE_(ENTER|LEAVE|NEED) zone=(\d+) inst=(\d+)(?: bc=(\d+))?", RegexOptions.Compiled);
+
+    public int PlayersIn(ZoneInfo z) { lock (_players) return _players.GetValueOrDefault($"{z.ZoneId}:{z.Instance}")?.Count ?? 0; }
+    int GroupPlayers(ZoneInfo z)
+    {
+        var zs = z.Group > 0 ? Zones.Where(x => x.Group == z.Group).ToList() : [z];
+        return zs.Sum(PlayersIn);
+    }
+
+    void OnZoneEvent(string kind, uint zone, uint inst, uint bc)
+    {
+        var key = $"{zone}:{inst}";
+        if (kind == "NEED") { RequestZone(zone, (int)inst); return; }
+        lock (_players)
+        {
+            foreach (var set in _players.Values) set.Remove(bc);            // un giocatore è in una zona sola
+            if (kind == "ENTER") { if (!_players.TryGetValue(key, out var set)) _players[key] = set = []; set.Add(bc); }
+        }
+        if (kind == "ENTER") RequestZone(zone, (int)inst); // prepara anche le zone vicine della stessa regione
+    }
+
+    /// <summary>Carica la zona (e le altre della sua regione) se non lo è già.</summary>
+    void RequestZone(uint zoneId, int inst)
+    {
+        List<ZoneInfo> toStart = [];
+        lock (_lock)
+        {
+            var z = _zones.Values.FirstOrDefault(x => x.ZoneId == zoneId && x.Instance == inst) ?? _zones.Values.FirstOrDefault(x => x.ZoneId == zoneId);
+            if (z == null) return;
+            foreach (var x in _zones.Values.Where(x => x == z || (z.Group > 0 && x.Group == z.Group)))
+            {
+                x.EmptySince = null;
+                if (!x.Wanted) { x.Wanted = true; x.GaveUp = false; x.RestartLog.Clear(); }
+                if (!x.Running) toStart.Add(x);
+            }
+        }
+        foreach (var x in toStart) { log("zone", $"Carico {x.Key} (serve a un giocatore)."); _ = Task.Run(() => StartZoneSafeAsync(x)); }
+    }
+
+    /// <summary>Scarica le zone dinamiche rimaste vuote (con la loro regione) per più di ZoneIdleMinutes.</summary>
+    void UnloadIdleZones()
+    {
+        if (!s.DynamicZones) return;
+        foreach (var z in Zones.Where(z => z.Wanted && !z.AlwaysOn && z.Running))
+        {
+            if (z.Started != null && DateTime.Now - z.Started < TimeSpan.FromMinutes(3)) continue;
+            if (GroupPlayers(z) > 0) { z.EmptySince = null; continue; }
+            z.EmptySince ??= DateTime.Now;
+            if (DateTime.Now - z.EmptySince < TimeSpan.FromMinutes(Math.Max(1, s.ZoneIdleMinutes))) continue;
+            log("zone", $"Scarico {z.Key}: vuota da {s.ZoneIdleMinutes} minuti.");
+            z.Wanted = false; z.EmptySince = null;
+            StopZoneProc(z);
+        }
+    }
+
+    /// <summary>Carica a mano una zona dormiente.</summary>
+    public void LoadZone(string key)
+    {
+        ZoneInfo? z; lock (_lock) _zones.TryGetValue(key, out z);
+        if (z == null) return;
+        z.Wanted = true; z.GaveUp = false; z.RestartLog.Clear();
+        if (!z.Running) _ = Task.Run(() => StartZoneSafeAsync(z));
+    }
+
+    void StartZoneProc(ZoneInfo z)
+    {
+        var exe = Path.Combine(Bin64, "AAEmu.ZoneHost.exe");
+        var logDir = Path.Combine(ServerDir, "logs", "zone", z.Key.Replace(':', '_'));
+        Directory.CreateDirectory(logDir);
+        var args = $"-dedicated +world_ip 127.0.0.1 +world_port 1240 +world_serveraddr 127.0.0.1 +world_serverport 1240 " +
+                   $"+zone {z.Name} +sv_map {z.Name} +instance {z.Instance} +sv_port {z.Port} +db_location game/db/game_decrypted.sqlite3 " +
+                   "+e_render 0 +r_Driver Null +npc_move_skip_standing 0 +npc_move_skip_disabledAI 0 +npc_movement_skip 0 +ai_systemupdate 1";
+        z.Loaded = false;
+        z.Started = DateTime.Now;
+        var name = "zone:" + z.Key;
+        if (!File.Exists(exe)) { log("zone", $"File mancante: {exe}"); return; }
+        // desktop nascosto: le finestre dello Zone Host non compaiono mai. L'output non passa dal pannello, ha i suoi log in logs\zone.
+        z.Proc = HiddenDesktop.Start(exe, args, Bin64, new()
+        {
+            ["AAEMU_ZONE_DLL"] = Path.Combine(Bin64, "x2game-dev_dedicate.dll"),
+            ["AAEMU_ZONE_SAVE_DIR"] = logDir,
+            ["AAEMU_ZONE_LOG_NAME"] = z.Key.Replace(':', '_')
+        });
+        if (z.Proc == null) { log("zone", $"Zona {z.Key}: avvio fallito."); return; }
+        _job.Add(z.Proc);
+        var proc = z.Proc;
+        proc.EnableRaisingEvents = true;
+        proc.Exited += (_, _) => OnExited(name, proc);
+    }
+
+    void StopZoneProc(ZoneInfo z)
+    {
+        if (z.Proc == null) return;
+        var key = "zone:" + z.Key;
+        lock (_stopping) _stopping.Add(key);
+        try { if (!z.Proc.HasExited) { z.Proc.Kill(true); z.Proc.WaitForExit(4000); } } catch { }
+        z.Loaded = false;
+        lock (_stopping) _stopping.Remove(key);
+    }
+
+    /// <summary>Riavvia una sola zona: gli altri giocatori restano collegati.</summary>
+    public async Task RestartZoneAsync(string key)
+    {
+        ZoneInfo? z; lock (_lock) _zones.TryGetValue(key, out z);
+        if (z == null) return;
+        StopZoneProc(z); z.GaveUp = false; z.Wanted = true; z.RestartLog.Clear();
+        await Task.Delay(1500);
+        StartZoneProc(z);
+    }
+
+    public void StopZone(string key)
+    {
+        ZoneInfo? z; lock (_lock) _zones.TryGetValue(key, out z);
+        if (z == null) return;
+        z.Wanted = false; z.EmptySince = null; // scaricata a mano: torna dormiente (si ricarica se serve a un giocatore)
+        StopZoneProc(z);
+        log("zone", $"Zona {key} fermata.");
+    }
+
+    static readonly Regex ZoneLoadedRx = new(@"ZoneLoaded zoneId=(\d+) instanceId=(\d+)", RegexOptions.Compiled);
+    static readonly Regex ZoneLostRx = new(@"(Zone lost|Zone disconnect).*zoneId=(\d+) instanceId=(\d+)", RegexOptions.Compiled);
+
+    void ParseWorldLine(string l)
+    {
+        Match m;
+        if ((m = ZoneEvRx.Match(l)).Success) OnZoneEvent(m.Groups[1].Value, uint.Parse(m.Groups[2].Value), uint.Parse(m.Groups[3].Value), m.Groups[4].Success ? uint.Parse(m.Groups[4].Value) : 0);
+        else if ((m = ZoneLoadedRx.Match(l)).Success) SetLoaded(uint.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), true);
+        else if ((m = ZoneLostRx.Match(l)).Success) SetLoaded(uint.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value), false);
+    }
+
+    void SetLoaded(uint zoneId, int inst, bool loaded)
+    {
+        lock (_lock)
+            foreach (var z in _zones.Values.Where(z => z.ZoneId == zoneId && z.Instance == inst)) z.Loaded = loaded;
+    }
+
+    static bool PortListening(int port) =>
+        System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(e => e.Port == port);
+
+    // =====================================================================
+    // Controllo automatico
+    // =====================================================================
+
+    void StartWatchdog()
+    {
+        _watch?.Cancel();
+        _watch = new CancellationTokenSource();
+        var ct = _watch.Token;
+        _ = Task.Run(async () =>
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try { await Task.Delay(6000, ct); await WatchOnceAsync(); }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex) { log("controllo", ex.Message); }
+            }
+        }, ct);
+    }
+
+    bool CanRestart(string key)
+    {
+        if (!_restartLog.TryGetValue(key, out var l)) _restartLog[key] = l = [];
+        l.RemoveAll(t => DateTime.Now - t > TimeSpan.FromMinutes(10));
+        if (l.Count >= 5) return false;
+        l.Add(DateTime.Now);
+        return true;
+    }
+
+    async Task WatchOnceAsync()
+    {
+        await MaybeBackupAsync();
+        if (!_wanted || !s.Watchdog || s.Maintenance) return;
+        if (!IsRunning("mysql") && !IsRunning("game") && !IsRunning("login")) return; // spento di proposito
+        if (!IsRunning("mysql")) { if (CanRestart("mysql")) { log("controllo", "MySQL fermo: lo riavvio."); await StartMySqlAsync(); } return; }
+        if (!IsRunning("login") && CanRestart("login")) { log("controllo", "Login fermo: lo riavvio."); StartLogin(); }
+        if (!IsRunning("game"))
+        {
+            if (!CanRestart("game")) { log("controllo", "World fermo troppe volte: non lo riavvio più. Controlla i log."); return; }
+            log("controllo", "World fermo: lo riavvio con le sue zone.");
+            foreach (var z in Zones) StopZoneProc(z);
+            StartWorld();
+            _ = Task.Run(StartZonesWhenWorldReady);
+            return;
+        }
+        UnloadIdleZones();
+        foreach (var z in Zones)
+        {
+            // le zone mai avviate le avvia l'avvio scaglionato: il controllo interviene solo su quelle cadute
+            if (z.Running || z.GaveUp || !z.Wanted || z.Started == null || !PortListening(1240)) continue;
+            if (DateTime.Now - z.Started < TimeSpan.FromSeconds(20)) continue;
+            z.RestartLog.RemoveAll(t => DateTime.Now - t > TimeSpan.FromMinutes(10));
+            if (z.RestartLog.Count >= 4) { z.GaveUp = true; log("controllo", $"Zona {z.Key}: si ferma di continuo, la escludo."); continue; }
+            z.RestartLog.Add(DateTime.Now); z.Restarts++;
+            log("controllo", $"Zona {z.Key} ferma: la riavvio.");
+            await StartZoneSafeAsync(z);
+            await Task.Delay(1500);
+        }
+    }
+
+    /// <summary>Invia un comando alla console del processo, se la accetta.</summary>
     public void SendConsole(string name, string line)
     {
         if (_procs.TryGetValue(name, out var p) && !p.HasExited) p.StandardInput.WriteLine(line);
         else log(name, "Processo non attivo, comando ignorato.");
     }
 
-    async Task RunToEndAsync(string exe, string args, string tag)
+    async Task RunToEndAsync(string exe, string args, string tag, Action<string>? onLine = null)
     {
         var p = Process.Start(new ProcessStartInfo(exe, args)
-        {
-            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
-        })!;
-        p.OutputDataReceived += (_, e) => { if (e.Data != null) log(tag, e.Data); };
-        p.ErrorDataReceived += (_, e) => { if (e.Data != null) log(tag, e.Data); };
+        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true })!;
+        _job.Add(p);
+        void Out(string? l) { if (l == null) return; onLine?.Invoke(l); if (!l.StartsWith("PROGRESS")) log(tag, l); }
+        p.OutputDataReceived += (_, e) => Out(e.Data);
+        p.ErrorDataReceived += (_, e) => Out(e.Data);
         p.BeginOutputReadLine(); p.BeginErrorReadLine();
         await p.WaitForExitAsync();
     }
 
-    // ---------- Account ----------
+    // =====================================================================
+    // Backup
+    // =====================================================================
+
+    /// <summary>Backup automatico ogni BackupEveryHours ore (solo con MySQL acceso).</summary>
+    async Task MaybeBackupAsync()
+    {
+        if (s.BackupEveryHours <= 0 || !IsRunning("mysql") || !_wanted) return;
+        var last = Backups().FirstOrDefault()?.LastWriteTime ?? DateTime.MinValue;
+        if (DateTime.Now - last < TimeSpan.FromHours(s.BackupEveryHours)) return;
+        if (DateTime.Now - _serverStart < TimeSpan.FromMinutes(5)) return; // non durante il caricamento
+        try { await BackupNowAsync(); } catch (Exception ex) { log("backup", "Backup automatico fallito: " + ex.Message); }
+    }
+
+    public IEnumerable<FileInfo> Backups() =>
+        Directory.Exists(BackupDir) ? new DirectoryInfo(BackupDir).GetFiles("*.sql.gz").OrderByDescending(f => f.LastWriteTime) : [];
+
+    public async Task<string> BackupNowAsync()
+    {
+        if (!IsRunning("mysql")) throw new Exception("MySQL non è acceso.");
+        Directory.CreateDirectory(BackupDir);
+        var file = Path.Combine(BackupDir, $"daprod_{DateTime.Now:yyyyMMdd_HHmm}.sql.gz");
+        var prev = Activity; Activity = "Backup dei database...";
+        try
+        {
+            var p = Process.Start(new ProcessStartInfo(Path.Combine(MySqlBin, "mysqldump.exe"),
+                $"-uroot -h127.0.0.1 -P{s.MySqlPort} --single-transaction --routines --databases aaemu_login aaemu_game")
+            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true })!;
+            await using (var fs = File.Create(file))
+            await using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
+                await p.StandardOutput.BaseStream.CopyToAsync(gz);
+            await p.WaitForExitAsync();
+            if (p.ExitCode != 0) { File.Delete(file); throw new Exception("mysqldump: " + await p.StandardError.ReadToEndAsync()); }
+        }
+        finally { Activity = prev; }
+        foreach (var old in Backups().Skip(Math.Max(1, s.KeepBackups))) try { old.Delete(); } catch { }
+        log("backup", $"Creato {Path.GetFileName(file)} ({new FileInfo(file).Length / 1048576} MB).");
+        return file;
+    }
+
+    /// <summary>Ripristina un backup. Ferma il server, sostituisce i database e riavvia.</summary>
+    public async Task RestoreAsync(string file)
+    {
+        var wasWanted = _wanted;
+        StopAll();
+        await Task.Delay(1500);
+        await StartMySqlAsync();
+        Activity = "Ripristino il backup...";
+        try
+        {
+            var p = Process.Start(new ProcessStartInfo(Path.Combine(MySqlBin, "mysql.exe"), $"-uroot -h127.0.0.1 -P{s.MySqlPort}")
+            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardError = true })!;
+            await using (var fs = File.OpenRead(file))
+            await using (var gz = new GZipStream(fs, CompressionMode.Decompress))
+                await gz.CopyToAsync(p.StandardInput.BaseStream);
+            p.StandardInput.Close();
+            await p.WaitForExitAsync();
+            if (p.ExitCode != 0) throw new Exception("Ripristino fallito: " + await p.StandardError.ReadToEndAsync());
+        }
+        finally { Activity = ""; }
+        log("backup", "Backup ripristinato.");
+        StopMySql();
+        if (wasWanted) await StartAllAsync();
+    }
+
+    // =====================================================================
+    // Account e database
+    // =====================================================================
 
     public static string HashPassword(string pwd) => Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(pwd)));
 
-    public async Task CreateAccountAsync(string user, string pwd)
+    /// <summary>Token di accesso per il client: "{scadenza}.{HMAC(utente|scadenza)}", verificato dal Login.</summary>
+    public string MakeToken(string user, int hours = 12)
     {
-        await using var c = new MySqlConnection(ConnString("aaemu_login"));
-        await c.OpenAsync();
-        var cmd = new MySqlCommand("INSERT INTO users (username,password,email,last_login,last_ip,created_at,updated_at) VALUES (@u,@p,'',0,'',0,0)", c);
-        cmd.Parameters.AddWithValue("@u", user); cmd.Parameters.AddWithValue("@p", HashPassword(pwd));
-        await cmd.ExecuteNonQueryAsync();
+        var exp = DateTimeOffset.UtcNow.AddHours(hours).ToUnixTimeSeconds();
+        using var h = new HMACSHA256(Encoding.UTF8.GetBytes(s.TokenSecret));
+        return $"{exp}.{Convert.ToHexString(h.ComputeHash(Encoding.UTF8.GetBytes($"{user}|{exp}"))).ToLowerInvariant()}";
     }
 
-    public async Task SetPasswordAsync(long id, string pwd)
+    public async Task CreateAccountAsync(string user, string pwd) =>
+        await ExecAsync("aaemu_login", "INSERT INTO users (username,password,email,last_login,last_ip,created_at,updated_at) VALUES (@u,@p,'',0,'',0,0)",
+            ("@u", user), ("@p", HashPassword(pwd)));
+
+    public async Task SetPasswordAsync(long id, string pwd) =>
+        await ExecAsync("aaemu_login", "UPDATE users SET password=@p WHERE id=@i", ("@p", HashPassword(pwd)), ("@i", id));
+
+    public async Task DeleteAccountAsync(long id) =>
+        await ExecAsync("aaemu_login", "DELETE FROM users WHERE id=@i", ("@i", id));
+
+    public async Task<bool> CheckPasswordAsync(string user, string pwd)
     {
-        await using var c = new MySqlConnection(ConnString("aaemu_login"));
-        await c.OpenAsync();
-        var cmd = new MySqlCommand("UPDATE users SET password=@p WHERE id=@i", c);
-        cmd.Parameters.AddWithValue("@p", HashPassword(pwd)); cmd.Parameters.AddWithValue("@i", id);
-        await cmd.ExecuteNonQueryAsync();
+        var t = await QueryAsync("aaemu_login", "SELECT password, banned FROM users WHERE username=@u", ("@u", user));
+        return t.Rows.Count == 1 && Convert.ToInt32(t.Rows[0]["banned"]) == 0 && (string)t.Rows[0]["password"] == HashPassword(pwd);
     }
 
-    public async Task DeleteAccountAsync(long id)
-    {
-        await using var c = new MySqlConnection(ConnString("aaemu_login"));
-        await c.OpenAsync();
-        var cmd = new MySqlCommand("DELETE FROM users WHERE id=@i", c);
-        cmd.Parameters.AddWithValue("@i", id);
-        await cmd.ExecuteNonQueryAsync();
-    }
-
-    public async Task<System.Data.DataTable> QueryAsync(string db, string sql)
+    public async Task<System.Data.DataTable> QueryAsync(string db, string sql, params (string, object)[] p)
     {
         await using var c = new MySqlConnection(ConnString(db));
         await c.OpenAsync();
+        var cmd = new MySqlCommand(sql, c);
+        foreach (var (k, v) in p) cmd.Parameters.AddWithValue(k, v);
         var t = new System.Data.DataTable();
-        using var r = await new MySqlCommand(sql, c).ExecuteReaderAsync();
+        using var r = await cmd.ExecuteReaderAsync();
         t.Load(r);
         return t;
     }
 
-    public async Task<int> ExecAsync(string db, string sql)
+    public async Task<int> ExecAsync(string db, string sql, params (string, object)[] p)
     {
         await using var c = new MySqlConnection(ConnString(db));
         await c.OpenAsync();
-        return await new MySqlCommand(sql, c).ExecuteNonQueryAsync();
+        var cmd = new MySqlCommand(sql, c);
+        foreach (var (k, v) in p) cmd.Parameters.AddWithValue(k, v);
+        return await cmd.ExecuteNonQueryAsync();
     }
+
+    public void Dispose() { _watch?.Cancel(); _job.Dispose(); }
 }

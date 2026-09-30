@@ -1,0 +1,23 @@
+DaProd ArcheAge - cartella del SERVER
+=====================================
+
+DaProdServer.exe      Il pannello: aprilo e il server parte da solo.
+
+gioco\                Il client di ArcheAge (lo scaricano i launcher degli amici).
+server\bin\login\     Login (porta 1237)
+server\bin\world\     World: logica di gioco (porta 1239) e gestione delle zone
+server\bin\game\      Contenuti e configurazione del gioco (letti dal World)
+server\zoneclient\    Copia del client per le mappe (creata dal pannello, game_pak estratto)
+server\zonehost\      Zone Host + database del mondo
+server\mysql\         MySQL portatile (dal pacchetto dati)
+server\mysql-data\    Database veri: account e personaggi (il pannello fa i backup)
+server\backups\       Backup automatici dei database
+server\tools\         7-Zip ed estrattore di game_pak
+server\logs\          panel.log e log delle zone
+
+data\panel.json       Impostazioni del pannello
+data\events.json      Eventi programmati
+data\rates.json       Rate del mondo (XP, loot...)
+
+launcher\             Copia del launcher (per "Pacchetto amici" e aggiornamento automatico)
+PacchettoAmici.zip    Si crea col pulsante "Pacchetto amici": mandalo agli amici.
