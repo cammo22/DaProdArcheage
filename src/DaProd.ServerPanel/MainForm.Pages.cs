@@ -193,8 +193,10 @@ public sealed partial class MainForm
         b2.Controls.Add(Ui.Btn("Sblocca (Solzreed)", Ui.Orange, () => SetCharAsync("UPDATE characters SET zone_id=179, x=15578, y=15382, z=126 WHERE id=@i"), 180));
         b2.Controls.Add(Ui.Btn("Dai oro", Ui.Purple, async () =>
         {
-            var v = Ui.Prompt(this, "Quanto oro aggiungere?", "100"); if (!long.TryParse(v, out var g)) return;
-            await SetCharAsync("UPDATE characters SET money=money+@g WHERE id=@i", ("@g", g * 10000));
+            if (SelId(_chars, "id") is not { } id) { MessageBox.Show("Seleziona un personaggio."); return; }
+            var v = Ui.Prompt(this, "Quanto oro aggiungere? (numero negativo per togliere)", "100"); if (!long.TryParse(v, out var g)) return;
+            MessageBox.Show(await _srv.GiveGoldAsync(id, g * 10000), "Dai oro");
+            await RefreshChars();
         }, 110));
         b2.Controls.Add(Ui.Btn("Imposta livello", Ui.Purple, async () =>
         {
@@ -202,7 +204,7 @@ public sealed partial class MainForm
             await SetCharAsync("UPDATE characters SET level=@l WHERE id=@i", ("@l", l));
         }, 150));
         t2.Controls.Add(_chars); t2.Controls.Add(Ui.Gap()); t2.Controls.Add(b2);
-        t2.Controls.Add(Ui.Hint("Il personaggio deve essere OFFLINE: se è in gioco, il salvataggio automatico sovrascrive la modifica. GM = può usare i comandi del gioco (annunci, kick, teletrasporto...) dalla console GM.", 44));
+        t2.Controls.Add(Ui.Hint("Dai oro funziona in tempo reale anche con il personaggio in gioco. Le altre modifiche (GM, sblocco, livello) vanno fatte con il personaggio OFFLINE, altrimenti il salvataggio del gioco le sovrascrive.", 44));
 
         _accs = Ui.Grid();
         var b3 = Ui.Bar();

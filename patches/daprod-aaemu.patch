@@ -161,3 +161,101 @@
          return true;
      }
  
+--- /dev/null
++++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
+@@ -0,0 +1,95 @@
++using System.Runtime.CompilerServices;
++using AAEmu.Commons.Utils.DB;
++using AAEmu.Game.Core.Managers.World;
++using AAEmu.Game.Models.Game.Items;
++using NLog;
++
++namespace AAEmu.World.Core;
++
++/// <summary>
++/// DaProd: il pannello scrive i comandi nella tabella daprod_commands (aaemu_game); qui vengono eseguiti in tempo reale.
++/// "gold" aggiunge (o toglie, se negativo) oro a un personaggio: se è online lo riceve subito in gioco, altrimenti
++/// si aggiorna il database. Modificare il database di un personaggio online non serve: il gioco lo riscrive al salvataggio.
++/// </summary>
++internal static class DaProdCommands
++{
++    private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
++    private static int _started;
++
++    /// <summary>Parte da sola all'avvio del World (nessuna modifica ad altri file).</summary>
++    [ModuleInitializer]
++    internal static void Init()
++    {
++        if (Interlocked.Exchange(ref _started, 1) == 1)
++            return;
++        _ = Task.Run(async () =>
++        {
++            await Task.Delay(TimeSpan.FromSeconds(20)); // lascia finire l'avvio del World
++            while (true)
++            {
++                var ok = true;
++                try { Poll(); }
++                catch (Exception ex) { ok = false; Logger.Debug(ex, "DAPROD_CMD poll"); }
++                await Task.Delay(ok ? 2000 : 15000); // database irraggiungibile: riprovo con calma
++            }
++        });
++    }
++
++    private static void Poll()
++    {
++        using var c = MySQL.CreateConnection();
++        var pending = new List<(long Id, string Kind, uint Char, long Amount)>();
++        using (var q = c.CreateCommand())
++        {
++            q.CommandText = "SELECT id, kind, char_id, amount FROM daprod_commands WHERE done=0 ORDER BY id LIMIT 20";
++            try
++            {
++                using var r = q.ExecuteReader();
++                while (r.Read())
++                    pending.Add((r.GetInt64(0), r.GetString(1), r.GetUInt32(2), r.GetInt64(3)));
++            }
++            catch (Exception)
++            {
++                return; // la tabella la crea il pannello: se manca non c'è niente da fare
++            }
++        }
++
++        foreach (var (id, kind, charId, amount) in pending)
++        {
++            string result;
++            try
++            {
++                var character = kind == "gold" ? WorldManager.Instance.GetCharacterById(charId) : null;
++                if (kind != "gold")
++                    result = "comando sconosciuto";
++                else if (character != null)
++                {
++                    var ok = amount >= 0
++                        ? character.AddMoney(SlotType.Inventory, amount)
++                        : character.SubtractMoney(SlotType.Inventory, -amount);
++                    result = ok ? "online" : "rifiutato (soldi insufficienti?)";
++                }
++                else
++                {
++                    using var u = c.CreateCommand();
++                    u.CommandText = "UPDATE characters SET money=GREATEST(0, money+@a) WHERE id=@i";
++                    u.Parameters.AddWithValue("@a", amount);
++                    u.Parameters.AddWithValue("@i", charId);
++                    result = u.ExecuteNonQuery() > 0 ? "offline" : "personaggio non trovato";
++                }
++            }
++            catch (Exception ex)
++            {
++                Logger.Warn(ex, "DAPROD_CMD {0} failed", id);
++                result = "errore: " + ex.Message;
++            }
++
++            using var d = c.CreateCommand();
++            d.CommandText = "UPDATE daprod_commands SET done=1, result=@r WHERE id=@i";
++            d.Parameters.AddWithValue("@r", result.Length > 60 ? result[..60] : result);
++            d.Parameters.AddWithValue("@i", id);
++            d.ExecuteNonQuery();
++            Logger.Info("DAPROD_CMD {0} {1} char={2} amount={3} -> {4}", id, kind, charId, amount, result);
++        }
++    }
++}

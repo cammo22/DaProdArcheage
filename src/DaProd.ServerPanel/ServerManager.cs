@@ -173,6 +173,7 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
                     $"-uroot -h127.0.0.1 -P{s.MySqlPort} {db} -e \"source {Path.Combine(SqlDir, db + ".sql").Replace('\\', '/')}\"", "mysql");
             }
         }
+        await EnsureCommandTableAsync();
         WriteConfigs();
         Activity = "";
         log("panel", "Setup del database completato.");
@@ -741,6 +742,35 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
         var exp = DateTimeOffset.UtcNow.AddHours(hours).ToUnixTimeSeconds();
         using var h = new HMACSHA256(Encoding.UTF8.GetBytes(s.TokenSecret));
         return $"{exp}.{Convert.ToHexString(h.ComputeHash(Encoding.UTF8.GetBytes($"{user}|{exp}"))).ToLowerInvariant()}";
+    }
+
+    /// <summary>Tabella dei comandi in tempo reale: il World la legge ogni 2 secondi (vedi DaProdCommands.cs nella patch di AAEmu).</summary>
+    public Task<int> EnsureCommandTableAsync() =>
+        ExecAsync("aaemu_game", "CREATE TABLE IF NOT EXISTS daprod_commands (id BIGINT AUTO_INCREMENT PRIMARY KEY, kind VARCHAR(20) NOT NULL, " +
+            "char_id INT UNSIGNED NOT NULL, amount BIGINT NOT NULL DEFAULT 0, done TINYINT NOT NULL DEFAULT 0, result VARCHAR(60) NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+
+    /// <summary>Aggiunge oro (in rame) a un personaggio: subito in gioco se è online, altrimenti nel database. Restituisce un messaggio per l'utente.</summary>
+    public async Task<string> GiveGoldAsync(long charId, long copper)
+    {
+        await EnsureCommandTableAsync();
+        if (!IsRunning("game"))
+        {
+            var n = await ExecAsync("aaemu_game", "UPDATE characters SET money=GREATEST(0, money+@a) WHERE id=@i", ("@a", copper), ("@i", charId));
+            return n > 0 ? "Server spento: oro aggiunto nel database, lo vedrai al prossimo accesso." : "Personaggio non trovato.";
+        }
+        await ExecAsync("aaemu_game", "INSERT INTO daprod_commands (kind, char_id, amount) VALUES ('gold', @i, @a)", ("@i", charId), ("@a", copper));
+        var id = Convert.ToInt64((await QueryAsync("aaemu_game", "SELECT MAX(id) FROM daprod_commands")).Rows[0][0]);
+        for (var i = 0; i < 12; i++)
+        {
+            await Task.Delay(1000);
+            var t = await QueryAsync("aaemu_game", "SELECT done, result FROM daprod_commands WHERE id=@i", ("@i", id));
+            if (t.Rows.Count == 1 && Convert.ToInt32(t.Rows[0]["done"]) == 1)
+            {
+                var r = t.Rows[0]["result"] as string ?? "";
+                return r == "online" ? "Oro consegnato in gioco." : r == "offline" ? "Personaggio non collegato: oro aggiunto, lo vedrai all'accesso." : "Esito: " + r;
+            }
+        }
+        return "Il World non ha risposto entro 12 secondi (si sta ancora avviando?). Il comando resta in coda e verrà eseguito appena possibile.";
     }
 
     public async Task CreateAccountAsync(string user, string pwd) =>
