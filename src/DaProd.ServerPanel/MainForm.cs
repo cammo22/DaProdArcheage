@@ -51,7 +51,7 @@ public sealed partial class MainForm : Form
         _api = new LauncherApi(_s, Log, () => Live.Snapshot(_s, _srv, _last), _srv, _events);
 
         // pagine: create solo alla prima visita
-        _factories["Server"] = ServerPage; _factories["Zone"] = ZonesPage; _factories["Giocatori"] = PlayersPage; _factories["Mondo"] = WorldPage;
+        _factories["Server"] = ServerPage; _factories["Zone"] = ZonesPage; _factories["Giocatori"] = PlayersPage; _factories["Mondo"] = WorldPage; _factories["Regole"] = RulesPage;
         _factories["Eventi"] = EventsPage; _factories["Backup"] = BackupPage; _factories["Database"] = SqlPage; _factories["Impostazioni"] = SettingsPage;
 
         var side = new Panel { Dock = DockStyle.Left, Width = 190, BackColor = Ui.Side };

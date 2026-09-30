@@ -198,13 +198,24 @@ public sealed partial class MainForm
             MessageBox.Show(await _srv.GiveGoldAsync(id, g * 10000), "Dai oro");
             await RefreshChars();
         }, 110));
+        b2.Controls.Add(Ui.Btn("Riempi labor", Ui.Green, async () =>
+        {
+            if (SelId(_chars, "id") is not { } id) { MessageBox.Show("Seleziona un personaggio."); return; }
+            MessageBox.Show(await Bg2(() => _srv.FillLaborAsync(id)), "Labor");
+        }, 130));
+        b2.Controls.Add(Ui.Btn("Punti pass", Ui.Purple, async () =>
+        {
+            if (SelId(_chars, "id") is not { } id) { MessageBox.Show("Seleziona un personaggio."); return; }
+            var v = Ui.Prompt(this, "Quanti punti pass aggiungere?", "1000"); if (!long.TryParse(v, out var pts) || pts <= 0) return;
+            MessageBox.Show(await Bg2(() => _srv.GivePassPointsAsync(id, pts)), "Punti pass");
+        }, 120));
         b2.Controls.Add(Ui.Btn("Imposta livello", Ui.Purple, async () =>
         {
             var v = Ui.Prompt(this, "Nuovo livello (1-55):", "50"); if (!int.TryParse(v, out var l) || l is < 1 or > 55) return;
             await SetCharAsync("UPDATE characters SET level=@l WHERE id=@i", ("@l", l));
         }, 150));
         t2.Controls.Add(_chars); t2.Controls.Add(Ui.Gap()); t2.Controls.Add(b2);
-        t2.Controls.Add(Ui.Hint("Dai oro funziona in tempo reale anche con il personaggio in gioco. Le altre modifiche (GM, sblocco, livello) vanno fatte con il personaggio OFFLINE, altrimenti il salvataggio del gioco le sovrascrive.", 44));
+        t2.Controls.Add(Ui.Hint("Dai oro, Riempi labor e Punti pass funzionano in tempo reale anche con il personaggio in gioco. Le altre modifiche (GM, sblocco, livello) vanno fatte con il personaggio OFFLINE, altrimenti il salvataggio del gioco le sovrascrive.", 44));
 
         _accs = Ui.Grid();
         var b3 = Ui.Bar();

@@ -161,104 +161,6 @@
          return true;
      }
  
---- /dev/null
-+++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
-@@ -0,0 +1,95 @@
-+using System.Runtime.CompilerServices;
-+using AAEmu.Commons.Utils.DB;
-+using AAEmu.Game.Core.Managers.World;
-+using AAEmu.Game.Models.Game.Items;
-+using NLog;
-+
-+namespace AAEmu.World.Core;
-+
-+/// <summary>
-+/// DaProd: il pannello scrive i comandi nella tabella daprod_commands (aaemu_game); qui vengono eseguiti in tempo reale.
-+/// "gold" aggiunge (o toglie, se negativo) oro a un personaggio: se è online lo riceve subito in gioco, altrimenti
-+/// si aggiorna il database. Modificare il database di un personaggio online non serve: il gioco lo riscrive al salvataggio.
-+/// </summary>
-+internal static class DaProdCommands
-+{
-+    private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
-+    private static int _started;
-+
-+    /// <summary>Parte da sola all'avvio del World (nessuna modifica ad altri file).</summary>
-+    [ModuleInitializer]
-+    internal static void Init()
-+    {
-+        if (Interlocked.Exchange(ref _started, 1) == 1)
-+            return;
-+        _ = Task.Run(async () =>
-+        {
-+            await Task.Delay(TimeSpan.FromSeconds(20)); // lascia finire l'avvio del World
-+            while (true)
-+            {
-+                var ok = true;
-+                try { Poll(); }
-+                catch (Exception ex) { ok = false; Logger.Debug(ex, "DAPROD_CMD poll"); }
-+                await Task.Delay(ok ? 2000 : 15000); // database irraggiungibile: riprovo con calma
-+            }
-+        });
-+    }
-+
-+    private static void Poll()
-+    {
-+        using var c = MySQL.CreateConnection();
-+        var pending = new List<(long Id, string Kind, uint Char, long Amount)>();
-+        using (var q = c.CreateCommand())
-+        {
-+            q.CommandText = "SELECT id, kind, char_id, amount FROM daprod_commands WHERE done=0 ORDER BY id LIMIT 20";
-+            try
-+            {
-+                using var r = q.ExecuteReader();
-+                while (r.Read())
-+                    pending.Add((r.GetInt64(0), r.GetString(1), r.GetUInt32(2), r.GetInt64(3)));
-+            }
-+            catch (Exception)
-+            {
-+                return; // la tabella la crea il pannello: se manca non c'è niente da fare
-+            }
-+        }
-+
-+        foreach (var (id, kind, charId, amount) in pending)
-+        {
-+            string result;
-+            try
-+            {
-+                var character = kind == "gold" ? WorldManager.Instance.GetCharacterById(charId) : null;
-+                if (kind != "gold")
-+                    result = "comando sconosciuto";
-+                else if (character != null)
-+                {
-+                    var ok = amount >= 0
-+                        ? character.AddMoney(SlotType.Inventory, amount)
-+                        : character.SubtractMoney(SlotType.Inventory, -amount);
-+                    result = ok ? "online" : "rifiutato (soldi insufficienti?)";
-+                }
-+                else
-+                {
-+                    using var u = c.CreateCommand();
-+                    u.CommandText = "UPDATE characters SET money=GREATEST(0, money+@a) WHERE id=@i";
-+                    u.Parameters.AddWithValue("@a", amount);
-+                    u.Parameters.AddWithValue("@i", charId);
-+                    result = u.ExecuteNonQuery() > 0 ? "offline" : "personaggio non trovato";
-+                }
-+            }
-+            catch (Exception ex)
-+            {
-+                Logger.Warn(ex, "DAPROD_CMD {0} failed", id);
-+                result = "errore: " + ex.Message;
-+            }
-+
-+            using var d = c.CreateCommand();
-+            d.CommandText = "UPDATE daprod_commands SET done=1, result=@r WHERE id=@i";
-+            d.Parameters.AddWithValue("@r", result.Length > 60 ? result[..60] : result);
-+            d.Parameters.AddWithValue("@i", id);
-+            d.ExecuteNonQuery();
-+            Logger.Info("DAPROD_CMD {0} {1} char={2} amount={3} -> {4}", id, kind, charId, amount, result);
-+        }
-+    }
-+}
 --- a/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs
 +++ b/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs
 @@ -194,6 +194,11 @@
@@ -420,3 +322,312 @@
  
                  return;
              }
+--- a/AAEmu.Game/Models/Game/Auction/AuctionFeeSchedule.cs
++++ b/AAEmu.Game/Models/Game/Auction/AuctionFeeSchedule.cs
+@@ -56,7 +56,7 @@
+ 
+     private readonly Dictionary<string, int> _values = [];
+ 
+-    public int SaleChargeRate => Get("auction_charge", 200);
++    public int SaleChargeRate => DaProdTweaks.On("auctionFree") ? 0 : Get("auction_charge", 200);
+     public int DepositMax => Get("auction_deposit_max", 1000000);
+     public int SaleChargeAccountBuffDiscount => Get("auction_charge_account_buff_discount", 0);
+     public int DepositAccountBuffDiscount => Get("auction_deposit_account_buff_discount", 0);
+@@ -66,6 +66,8 @@
+     /// <summary>Stored deposit rate for a listing duration.</summary>
+     public int GetDepositRate(AuctionDuration duration)
+     {
++        if (DaProdTweaks.On("auctionFree"))
++            return 0;
+         var key = duration switch
+         {
+             AuctionDuration.AuctionDuration6Hours => "auction_deposit_6",
+@@ -94,7 +96,7 @@
+     /// </summary>
+     public long GetSaleCharge(long soldAmount, int itemChargeRate = 0, int discountPercent = 0)
+     {
+-        if (soldAmount <= 0)
++        if (soldAmount <= 0 || DaProdTweaks.On("auctionFree"))
+             return 0;
+ 
+         var rate = itemChargeRate > 0 ? itemChargeRate : SaleChargeRate;
+@@ -105,7 +107,7 @@
+ 
+     public long GetListingDeposit(long buyoutPrice, AuctionDuration duration, int discountPercent = 0)
+     {
+-        if (buyoutPrice <= 0)
++        if (buyoutPrice <= 0 || DaProdTweaks.On("auctionFree"))
+             return 0;
+ 
+         var rate = ApplyPercentDiscount(GetDepositRate(duration), discountPercent);
+--- a/AAEmu.Game/Models/Game/Char/CharacterArchePass.cs
++++ b/AAEmu.Game/Models/Game/Char/CharacterArchePass.cs
+@@ -133,7 +133,7 @@
+             }
+ 
+             snapshot = ClonePasses();
+-            if (!BypassChargesForTests &&
++            if (!BypassChargesForTests && !DaProdTweaks.On("passFree") &&
+                 !Owner.TryPayCurrency(desc.CurrencyId, desc.CurrencyValue, false, ItemTaskType.ArchePassBuy))
+                 return false;
+ 
+@@ -153,7 +153,7 @@
+         if (!WorldSnapshotCommit.AcceptedLast(BypassChargesForTests, ConsumePersistFail()))
+         {
+             RestorePasses(snapshot);
+-            if (!BypassChargesForTests &&
++            if (!BypassChargesForTests && !DaProdTweaks.On("passFree") &&
+                 !Owner.TryRefundCurrency(desc.CurrencyId, desc.CurrencyValue, ItemTaskType.ArchePassBuy))
+             {
+                 Logger.Error(
+@@ -281,7 +281,7 @@
+             }
+ 
+             snapshot = ClonePasses();
+-            if (!BypassChargesForTests &&
++            if (!BypassChargesForTests && !DaProdTweaks.On("passFree") &&
+                 !TryConsume(desc.UpgradeItemId, 1, ItemTaskType.ArchePassUpgrade))
+                 return false;
+ 
+@@ -294,7 +294,7 @@
+         if (!WorldSnapshotCommit.AcceptedLast(BypassChargesForTests, ConsumePersistFail()))
+         {
+             RestorePasses(snapshot);
+-            if (!BypassChargesForTests &&
++            if (!BypassChargesForTests && !DaProdTweaks.On("passFree") &&
+                 !TryGrant(desc.UpgradeItemId, 1, ItemTaskType.ArchePassUpgrade))
+             {
+                 Logger.Error(
+@@ -440,6 +440,7 @@
+     {
+         if (!FeatureOn() || Owner == null || amount <= 0)
+             return false;
++        amount = Math.Max(1, (int)Math.Round(amount * DaProdTweaks.Get("passPointMult", 1)));
+ 
+         ArchePassProgress row;
+         Dictionary<uint, ArchePassProgress> snapshot;
+--- a/AAEmu.Game/Core/Managers/TimedRewardsManager.cs
++++ b/AAEmu.Game/Core/Managers/TimedRewardsManager.cs
+@@ -51,9 +51,10 @@
+     private static int GetOnlineLaborRate(GameConnection connection)
+     {
+         var fromData = LaborFor(connection).OnlineRate;
+-        return fromData > 0
++        var rate = fromData > 0
+             ? fromData
+             : AppConfiguration.Instance.Labor.GetTickAmount(connection.Payment.PremiumState);
++        return (int)Math.Round(rate * DaProdTweaks.Get("laborRegenMult", 1));
+     }
+ 
+     /// <summary>
+@@ -63,9 +64,10 @@
+     private static int GetOfflineLaborRate(GameConnection connection)
+     {
+         var fromData = LaborFor(connection).OfflineRate;
+-        return fromData > 0
++        var rate = fromData > 0
+             ? fromData
+             : AppConfiguration.Instance.LaborOffline.GetTickAmount(connection.Payment.PremiumState);
++        return (int)Math.Round(rate * DaProdTweaks.Get("laborRegenMult", 1));
+     }
+ 
+     private static LaborAllowance LaborFor(GameConnection connection) =>
+--- /dev/null
++++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
+@@ -0,0 +1,131 @@
++using System.Runtime.CompilerServices;
++using AAEmu.Commons.Utils.DB;
++using AAEmu.Game.Core.Managers;
++using AAEmu.Game.Core.Managers.World;
++using AAEmu.Game.Core.Packets.G2C;
++using AAEmu.Game.Models.Game.Char;
++using AAEmu.Game.Models.Game.Items;
++using NLog;
++
++namespace AAEmu.World.Core;
++
++/// <summary>
++/// DaProd: il pannello scrive i comandi nella tabella daprod_commands (aaemu_game); qui vengono eseguiti in tempo reale.
++/// "gold" aggiunge (o toglie, se negativo) oro a un personaggio: se è online lo riceve subito in gioco, altrimenti
++/// si aggiorna il database. Modificare il database di un personaggio online non serve: il gioco lo riscrive al salvataggio.
++/// </summary>
++internal static class DaProdCommands
++{
++    private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
++    private static int _started;
++
++    /// <summary>Parte da sola all'avvio del World (nessuna modifica ad altri file).</summary>
++    [ModuleInitializer]
++    internal static void Init()
++    {
++        if (Interlocked.Exchange(ref _started, 1) == 1)
++            return;
++        _ = Task.Run(async () =>
++        {
++            await Task.Delay(TimeSpan.FromSeconds(20)); // lascia finire l'avvio del World
++            while (true)
++            {
++                var ok = true;
++                try { Poll(); }
++                catch (Exception ex) { ok = false; Logger.Debug(ex, "DAPROD_CMD poll"); }
++                await Task.Delay(ok ? 2000 : 15000); // database irraggiungibile: riprovo con calma
++            }
++        });
++    }
++
++    /// <summary>Riempie al massimo il labor (account e "online") di un personaggio.</summary>
++    private static string FillLabor(System.Data.Common.DbConnection c, uint charId, Character character)
++    {
++        if (character != null)
++        {
++            var max = TimedRewardsManager.GetMaxLabor(character.PremiumGrade, true, character.AccountId);
++            var add = max - character.LaborPower;
++            if (add > 0)
++            {
++                character.LaborPower = (short)max;
++                character.SendPacket(new SCCharacterLaborPowerChangedPacket(add, 0, 0, 0, 0, 0));
++            }
++
++            character.AddLocalLaborPower(character.MaxLocalLaborPower - character.LocalLaborPower);
++            return "online";
++        }
++
++        using var u = c.CreateCommand();
++        // solo numeri (nessun testo esterno): niente parametri
++        u.CommandText = $"UPDATE accounts SET labor=GREATEST(labor, {(int)TimedRewardsManager.GetMaxLabor(true)}) WHERE account_id=(SELECT account_id FROM characters WHERE id={charId})";
++        return u.ExecuteNonQuery() > 0 ? "offline" : "personaggio non trovato";
++    }
++
++    private static void Poll()
++    {
++        using var c = MySQL.CreateConnection();
++        var pending = new List<(long Id, string Kind, uint Char, long Amount)>();
++        using (var q = c.CreateCommand())
++        {
++            q.CommandText = "SELECT id, kind, char_id, amount FROM daprod_commands WHERE done=0 ORDER BY id LIMIT 20";
++            try
++            {
++                using var r = q.ExecuteReader();
++                while (r.Read())
++                    pending.Add((r.GetInt64(0), r.GetString(1), r.GetUInt32(2), r.GetInt64(3)));
++            }
++            catch (Exception)
++            {
++                return; // la tabella la crea il pannello: se manca non c'è niente da fare
++            }
++        }
++
++        foreach (var (id, kind, charId, amount) in pending)
++        {
++            string result;
++            try
++            {
++                var character = kind is "gold" or "labor" or "passpoints" ? WorldManager.Instance.GetCharacterById(charId) : null;
++                if (kind == "labor")
++                    result = FillLabor(c, charId, character);
++                else if (kind == "passpoints")
++                    result = character == null ? "personaggio non collegato"
++                        : character.ArchePass?.TryAddPoints((int)amount) == true ? "online" : "nessun pass in corso";
++                else if (kind == "shop_reload")
++                {
++                    CashShopManager.Instance.Load();
++                    result = "online";
++                }
++                else if (kind != "gold")
++                    result = "comando sconosciuto";
++                else if (character != null)
++                {
++                    var ok = amount >= 0
++                        ? character.AddMoney(SlotType.Inventory, amount)
++                        : character.SubtractMoney(SlotType.Inventory, -amount);
++                    result = ok ? "online" : "rifiutato (soldi insufficienti?)";
++                }
++                else
++                {
++                    using var u = c.CreateCommand();
++                    u.CommandText = "UPDATE characters SET money=GREATEST(0, money+@a) WHERE id=@i";
++                    u.Parameters.AddWithValue("@a", amount);
++                    u.Parameters.AddWithValue("@i", charId);
++                    result = u.ExecuteNonQuery() > 0 ? "offline" : "personaggio non trovato";
++                }
++            }
++            catch (Exception ex)
++            {
++                Logger.Warn(ex, "DAPROD_CMD {0} failed", id);
++                result = "errore: " + ex.Message;
++            }
++
++            using var d = c.CreateCommand();
++            d.CommandText = "UPDATE daprod_commands SET done=1, result=@r WHERE id=@i";
++            d.Parameters.AddWithValue("@r", result.Length > 60 ? result[..60] : result);
++            d.Parameters.AddWithValue("@i", id);
++            d.ExecuteNonQuery();
++            Logger.Info("DAPROD_CMD {0} {1} char={2} amount={3} -> {4}", id, kind, charId, amount, result);
++        }
++    }
++}
+--- /dev/null
++++ b/AAEmu.Game/DaProdTweaks.cs
+@@ -0,0 +1,62 @@
++using System.Text.Json;
++
++namespace AAEmu.Game;
++
++/// <summary>
++/// DaProd: regole di gioco modificabili dal pannello in tempo reale. Il pannello scrive un file JSON
++/// (percorso in DAPROD_TWEAKS) con coppie nome:numero; il file viene riletto da solo quando cambia.
++/// Nome assente = valore di default (comportamento originale del gioco).
++/// </summary>
++public static class DaProdTweaks
++{
++    private static readonly string FilePath = Environment.GetEnvironmentVariable("DAPROD_TWEAKS");
++    private static readonly object Sync = new();
++    private static Dictionary<string, double> _values = [];
++    private static DateTime _stamp = DateTime.MinValue;
++    private static long _checkedAt;
++
++    private static Dictionary<string, double> Values
++    {
++        get
++        {
++            if (string.IsNullOrEmpty(FilePath))
++                return _values;
++            var now = Environment.TickCount64;
++            if (now - Interlocked.Read(ref _checkedAt) < 3000)
++                return _values;
++            lock (Sync)
++            {
++                Interlocked.Exchange(ref _checkedAt, now);
++                try
++                {
++                    var stamp = File.GetLastWriteTimeUtc(FilePath);
++                    if (stamp != _stamp)
++                    {
++                        var loaded = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
++                        using var doc = JsonDocument.Parse(File.ReadAllText(FilePath));
++                        foreach (var p in doc.RootElement.EnumerateObject())
++                        {
++                            if (p.Value.ValueKind == JsonValueKind.Number)
++                                loaded[p.Name] = p.Value.GetDouble();
++                            else if (p.Value.ValueKind == JsonValueKind.True)
++                                loaded[p.Name] = 1;
++                        }
++
++                        _values = loaded;
++                        _stamp = stamp;
++                    }
++                }
++                catch
++                {
++                    // file mancante o in scrittura: tengo i valori precedenti
++                }
++
++                return _values;
++            }
++        }
++    }
++
++    public static double Get(string name, double fallback) => Values.TryGetValue(name, out var v) ? v : fallback;
++
++    public static bool On(string name) => Values.TryGetValue(name, out var v) && v != 0;
++}

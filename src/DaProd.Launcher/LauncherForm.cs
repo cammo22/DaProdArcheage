@@ -336,6 +336,9 @@ public sealed class LauncherForm : Form
             ip = "127.0.0.1";
         }
         var args = _info.launchArgs.Replace("{ip}", ip).Replace("{port}", _info.port.ToString()).Replace("{user}", user).Replace("{token}", r.token);
+        // database personalizzato del server (pass, testi...): viaggia con gli aggiornamenti, il client lo carica con db_location
+        if (File.Exists(Path.Combine(_s.GameDir, "game", "db", "daprod.sqlite3")) && !args.Contains("db_location"))
+            args += " +db_location game/db/daprod.sqlite3";
         var p = Process.Start(new ProcessStartInfo(exe, args) { WorkingDirectory = Path.GetDirectoryName(exe)! });
         if (p == null) { Msg("Impossibile avviare il gioco.", true); return; }
         _gameRunning = true; p.EnableRaisingEvents = true;
