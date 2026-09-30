@@ -39,6 +39,7 @@ public sealed partial class MainForm : Form
     public MainForm()
     {
         Text = "DaProd ArcheAge - Pannello Server";
+        try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch { }
         Size = new Size(1220, 780); MinimumSize = new Size(1000, 620);
         StartPosition = FormStartPosition.CenterScreen;
         Font = Ui.Normal; BackColor = Ui.Bg; ForeColor = Ui.Text;

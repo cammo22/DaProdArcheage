@@ -46,6 +46,7 @@ public sealed class LauncherForm : Form
     {
         _updater = new GameUpdater(() => _dl, Api, _s.GameDir);
         Text = "DaProd ArcheAge Launcher";
+        try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch { }
         AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(940, 620); MinimumSize = new Size(940, 620);
         StartPosition = FormStartPosition.CenterScreen; BackColor = Theme.Bg; ForeColor = Theme.Text; Font = Theme.Normal; DoubleBuffered = true;

@@ -93,7 +93,7 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
                 await SendFile(ctx, full);
                 return;
             }
-            var launcherExe = Path.Combine(PanelSettings.Root, "launcher", "DaProdLauncher.exe");
+            var launcherExe = FriendLauncher.BasePath;
             object body = path == "/manifest.json" ? Manifest() : new
             {
                 name = s.ServerName, ip = s.PublicIp, port = s.LoginPort, gamePort = s.GamePort, streamPort = 1250, news = s.News,

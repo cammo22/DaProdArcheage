@@ -25,7 +25,8 @@ $ErrorActionPreference = "Stop"
 dotnet publish "$root\src\DaProd.ServerPanel" -c Release -o $srv
 dotnet publish "$root\src\DaProd.Launcher"    -c Release -o (Join-Path $dist "DaProdLauncher")
 New-Item -ItemType Directory -Force "$srv\launcher" | Out-Null
-try { Copy-Item "$dist\DaProdLauncher\DaProdLauncher.exe" "$srv\launcher\" -Force -ErrorAction Stop } catch { Write-Warning "launcher\DaProdLauncher.exe in uso: non aggiornato." }   # copia usata da "Pacchetto amici" e dall'aggiornamento automatico
+try { Copy-Item "$dist\DaProdLauncher\DaProdLauncher.exe" "$srv\launcher\" -Force -ErrorAction Stop; Remove-Item "$srv\launcher\DaProdLauncher.new.exe" -ErrorAction SilentlyContinue }
+catch { Copy-Item "$dist\DaProdLauncher\DaProdLauncher.exe" "$srv\launcher\DaProdLauncher.new.exe" -Force; Write-Warning "launcher\DaProdLauncher.exe in uso: nuova versione in DaProdLauncher.new.exe." }   # copia usata da "Pacchetto amici" e dall'aggiornamento automatico
 
 # --- 3) server: Login, Game (contenuti), World (logica + gestione zone)
 dotnet publish "$AAEmu\AAEmu.Login\AAEmu.Login.csproj" -c Release -o "$srv\server\bin\login"
@@ -36,6 +37,7 @@ robocopy "$AAEmu\AAEmu.WorldServer\AAEmu.World\bin\Release\net10.0" "$srv\server
 # --- 4) strumenti e dati che servono al server
 New-Item -ItemType Directory -Force "$srv\server\zonehost", "$srv\server\sql", "$srv\server\bin\game\Data", "$srv\server\bin\world\Data", "$srv\server\tools\7z" | Out-Null
 Copy-Item "$AAEmu\SQL\*" "$srv\server\sql" -Recurse -Force
+Copy-Item "$root\sql-extra\*" "$srv\server\sql" -Recurse -Force   # shop completo (tools\genshop.py)
 dotnet build "$root\tools\PakExtract\PakExtract.csproj" -c Release -o "$srv\server\tools\PakExtract"
 foreach ($f in "AAEmu.ZoneHost.exe", "x2game-dev_dedicate.dll") {
     $src = Join-Path $root "..\AAEmu.ZoneHost.exe\$f"

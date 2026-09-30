@@ -131,6 +131,16 @@ public sealed partial class MainForm
         _zg = Ui.Grid();
         foreach (var c in new[] { "Zona", "ID", "Modo", "Stato", "Giocatori", "RAM", "Riavvii", "Attiva da" }) _zg.Columns.Add(c, c);
         _zg.Columns["Zona"]!.FillWeight = 200;
+        _zg.SortCompare += (_, e) =>
+        {
+            // numeri e "123 MB" si confrontano come numeri, il resto come testo
+            static bool Num(object? o, out double d) => double.TryParse(new string(((o as string) ?? "").TakeWhile(ch => char.IsDigit(ch) || ch == '.').ToArray()), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out d);
+            if (e.Column.Index is 1 or 4 or 5 or 6)
+            {
+                var ok1 = Num(e.CellValue1, out var x); var ok2 = Num(e.CellValue2, out var y);
+                if (ok1 || ok2) { e.SortResult = (ok1 ? x : -1).CompareTo(ok2 ? y : -1); e.Handled = true; }
+            }
+        };
         string? Key() => _zg!.CurrentRow?.Cells[0].Value as string;
         var bar = Ui.Bar();
         bar.Controls.Add(Ui.Btn("Carica zona", Ui.Green, () => { if (Key() is { } k) _srv.LoadZone(k); return Task.CompletedTask; }, 140));
@@ -152,20 +162,26 @@ public sealed partial class MainForm
     {
         if (_zg == null) return;
         var zones = _srv.Zones;
-        while (_zg.Rows.Count < zones.Count) _zg.Rows.Add();
-        while (_zg.Rows.Count > zones.Count) _zg.Rows.RemoveAt(_zg.Rows.Count - 1);
-        for (var i = 0; i < zones.Count; i++)
+        // le righe si riconoscono dal nome della zona (colonna 0): l'ordine scelto dall'utente resta anche se cambiano i dati
+        var byKey = new Dictionary<string, DataGridViewRow>();
+        foreach (DataGridViewRow r in _zg.Rows) if (r.Cells[0].Value is string k) byKey[k] = r;
+        var keys = zones.Select(z => z.Key).ToHashSet();
+        foreach (var (k, r) in byKey.Where(kv => !keys.Contains(kv.Key)).ToList()) { _zg.Rows.Remove(r); byKey.Remove(k); }
+        var sortCol = _zg.SortedColumn; var sortedChanged = false;
+        foreach (var z in zones)
         {
-            var z = zones[i];
             long ram = 0; try { if (z.Running) ram = z.Proc!.WorkingSet64; } catch { }
             var state = !z.Wanted && !z.Running ? "DORMIENTE" : z.GaveUp ? "ESCLUSA" : !z.Running ? "SPENTA" : z.Loaded ? "OPERATIVA" : "IN CARICAMENTO";
             string[] v = [z.Key, z.ZoneId.ToString(), z.AlwaysOn ? "sempre" : "dinamica", state, _srv.PlayersIn(z).ToString(), ram > 0 ? $"{ram / 1048576} MB" : "-", z.Restarts.ToString(),
                 z.Started is { } s && z.Running ? $"{(DateTime.Now - s):hh\\:mm\\:ss}" : "-"];
-            var row = _zg.Rows[i];
-            for (var c = 0; c < v.Length; c++) if ((string?)row.Cells[c].Value != v[c]) row.Cells[c].Value = v[c];
+            if (!byKey.TryGetValue(z.Key, out var row)) { row = _zg.Rows[_zg.Rows.Add()]; byKey[z.Key] = row; sortedChanged = true; }
+            for (var c = 0; c < v.Length; c++)
+                if ((string?)row.Cells[c].Value != v[c]) { row.Cells[c].Value = v[c]; if (sortCol != null && c == sortCol.Index) sortedChanged = true; }
             var col = state == "OPERATIVA" ? Ui.Green : state == "IN CARICAMENTO" ? Ui.Yellow : state == "DORMIENTE" ? Ui.Muted : Ui.Red;
             if (row.Cells[3].Style.ForeColor != col) row.Cells[3].Style.ForeColor = col;
         }
+        // i valori nuovi non riordinano da soli: rimetto l'ordine scelto solo se la colonna ordinata è cambiata
+        if (sortCol != null && sortedChanged) _zg.Sort(sortCol, _zg.SortOrder == SortOrder.Descending ? System.ComponentModel.ListSortDirection.Descending : System.ComponentModel.ListSortDirection.Ascending);
     }
 
     // =====================================================================

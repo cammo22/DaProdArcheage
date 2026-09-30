@@ -14,7 +14,17 @@ public static class FriendLauncher
 {
     static readonly object Gate = new();
     static string Dir => Path.Combine(PanelSettings.Root, "launcher");
-    public static string BasePath => Path.Combine(Dir, "DaProdLauncher.exe");
+    /// <summary>Il launcher più recente: build.ps1 copia in ".new.exe" se DaProdLauncher.exe è in uso (lo apre l'host stesso).</summary>
+    public static string BasePath
+    {
+        get
+        {
+            string a = Path.Combine(Dir, "DaProdLauncher.exe"), b = Path.Combine(Dir, "DaProdLauncher.new.exe");
+            if (!File.Exists(b)) return a;
+            if (!File.Exists(a)) return b;
+            return File.GetLastWriteTimeUtc(b) > File.GetLastWriteTimeUtc(a) ? b : a;
+        }
+    }
     public static string OutPath => Path.Combine(Dir, "DaProdLauncher-Amici.exe");
 
     /// <summary>Restituisce il percorso dell'exe personalizzato, ricostruendolo solo se serve.</summary>

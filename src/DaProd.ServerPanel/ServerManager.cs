@@ -840,8 +840,8 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
     /// <summary>Se lo shop è vuoto carica quello predefinito; poi, se "shopFree" è attivo, azzera prezzi e limiti.</summary>
     async Task EnsureShopAsync()
     {
-        var n = Convert.ToInt64((await QueryAsync("aaemu_game", "SELECT COUNT(*) FROM ics_skus")).Rows[0][0]);
-        if (n == 0) await ImportShopAsync(false);
+        var n = Convert.ToInt64((await QueryAsync("aaemu_game", "SELECT COUNT(*) FROM ics_skus WHERE shop_id >= 3000000")).Rows[0][0]);
+        if (n == 0 && File.Exists(Path.Combine(SqlDir, "shop-full.sql"))) await ImportShopAsync(false); // shop vuoto o solo quello predefinito
         if (Tweaks.On("shopFree")) await ApplyShopFreeAsync(false);
     }
 
@@ -852,6 +852,10 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
         if (!File.Exists(file)) return "File dello shop non trovato: " + file;
         await RunToEndAsync(Path.Combine(MySqlBin, "mysql.exe"),
             $"-uroot -h127.0.0.1 -P{s.MySqlPort} aaemu_game --default-character-set=utf8mb4 -e \"source {file.Replace('\\', '/')}\"", "mysql");
+        var full = Path.Combine(SqlDir, "shop-full.sql"); // tutti gli oggetti del gioco divisi per scheda (tools\genshop.py)
+        if (File.Exists(full))
+            await RunToEndAsync(Path.Combine(MySqlBin, "mysql.exe"),
+                $"-uroot -h127.0.0.1 -P{s.MySqlPort} aaemu_game --default-character-set=utf8mb4 -e \"source {full.Replace('\\', '/')}\"", "mysql");
         if (Tweaks.On("shopFree")) await ApplyShopFreeAsync(false);
         if (reloadInGame) await ReloadShopInGameAsync();
         return "Shop caricato.";
