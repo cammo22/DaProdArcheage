@@ -46,6 +46,15 @@ Il pacchetto dati si crea sul PC dove tutto funziona con **Server > Pacchetto da
 - **Backup**: automatici ogni poche ore, ripristino con un clic.
 - Se un servizio si ferma il pannello lo riavvia da solo. Chiudendo il pannello si chiude tutto (anche in caso di crash).
 
+## Personalizzazione (pagina "Regole")
+- **Regole live** (valgono subito, anche con i giocatori online): shop gratis e senza limiti, mercato senza commissioni, ArchePass gratis + moltiplicatore dei punti,
+  velocità di recupero del labor, pass sempre visibili nel client.
+- **Configurazione avanzata**: tutte le opzioni dei file `Configurations\*.json` del gioco (funzioni attive/spente come siege o premium, regole del mondo), con ricerca e ripristino.
+- **Shop**: al primo avvio si carica lo shop completo (circa 25.000 oggetti divisi per scheda, biglietti ArchePass compresi). Si rigenera con `python tools/genshop.py`.
+- **Giocatori > Personaggi**: oro, labor al massimo, punti pass e livello. Oro, labor e punti pass funzionano in tempo reale con il personaggio in gioco.
+- **Dati del client**: il pannello crea `gioco\game\db\daprod.sqlite3` (database personalizzato) e il launcher lo carica con `+db_location`: si distribuisce con i normali aggiornamenti, senza toccare `game_pak`.
+- Icone: `python tools/makeicons.py`.
+
 ## Aggiornamenti
 `Server > Aggiornamenti` scarica l'ultima release da GitHub (serve un token di sola lettura in *Impostazioni > GitHubToken* se la repo è privata).
 Per pubblicare: `.\release.ps1 1.4.0`.

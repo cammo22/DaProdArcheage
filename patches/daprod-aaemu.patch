@@ -322,6 +322,23 @@
  
                  return;
              }
+@@ -3335,12 +3394,16 @@
+ 
+     public void SetAction(byte slot, ActionSlotType type, uint actionId)
+     {
++        if (slot >= Slots.Length)
++            return; // DaProd: the client can address more slots than the server keeps
+         Slots[slot].Type = type;
+         Slots[slot].ActionId = actionId;
+     }
+ 
+     public void SetAction(byte slot, ActionSlotType type, ulong itemId)
+     {
++        if (slot >= Slots.Length)
++            return; // DaProd: the client can address more slots than the server keeps
+         Slots[slot].Type = type;
+         Slots[slot].ActionId = itemId;
+     }
 --- a/AAEmu.Game/Models/Game/Auction/AuctionFeeSchedule.cs
 +++ b/AAEmu.Game/Models/Game/Auction/AuctionFeeSchedule.cs
 @@ -56,7 +56,7 @@
@@ -432,6 +449,59 @@
      }
  
      private static LaborAllowance LaborFor(GameConnection connection) =>
+--- a/AAEmu.Game/Core/Packets/C2G/CSMoveUnitPacket.cs
++++ b/AAEmu.Game/Core/Packets/C2G/CSMoveUnitPacket.cs
+@@ -88,8 +88,8 @@
+             if (mirrorTarget == null || !CanControlMovement(character, mirrorTarget, _moveType))
+             {
+                 Logger.Warn(
+-                    "Rejected Zone movement type {0} for target {1} from {2} ({3})",
+-                    _moveType.Type, _objId, character.Name, character.ObjId);
++                    "Rejected Zone movement type {0} for target {1} from {2} ({3}); target={4} riding={5}",
++                    _moveType.Type, _objId, character.Name, character.ObjId, mirrorTarget?.GetType().Name ?? "missing", character.IsRiding);
+                 return;
+             }
+ 
+@@ -103,6 +103,13 @@
+                 moveBody.Write((byte)_moveType.Type);
+                 moveBody.Write(_moveType);
+                 WorldIntegration.RelayMoveToZone(_objId, moveBody.GetBytes());
++
++                // DaProd: on a mount the client reports the MOUNT's movement, and the mount is not a zone unit, so the zone kept
++                // the rider standing where they got on: NPCs around the real position vanished and mobs attacked the old spot.
++                // The rider's position is the mount's, so it is relayed for the rider as well.
++                if (mirrorTarget is Mate ridden && _moveType is UnitMoveType && ridden.ZoneAnnouncedTo == 0 &&
++                    ridden.Passengers.Values.Any(p => p._objId == character.ObjId))
++                    WorldIntegration.RelayMoveToZone(character.ObjId, moveBody.GetBytes());
+             }
+ 
+             // Keep local transform for region/interest so CS/SC glue does not desync, but no SC broadcast.
+--- a/AAEmu.Game/Core/Managers/MateManager.cs
++++ b/AAEmu.Game/Core/Managers/MateManager.cs
+@@ -318,7 +318,10 @@
+         }
+ 
+         if (zoneId == 0)
+-            return;
++        {
++            Logger.Warn("DAPROD mount: mate obj={0} has no zone yet, not announced to the zone", mate.ObjId);
++            return;
++        }
+ 
+         if (mate.ZoneAnnouncedTo != 0 && mate.ZoneAnnouncedTo != zoneId)
+             WithdrawMateFromZone(mate);
+@@ -328,7 +331,10 @@
+ 
+         var body = WorldIntegration.BuildWzUnitStateBody(mate);
+         if (body is not { Length: > 0 })
+-            return;
++        {
++            Logger.Warn("DAPROD mount: empty zone state for mate obj={0}, not announced to the zone", mate.ObjId);
++            return;
++        }
+ 
+         WorldIntegration.RelayUnitStateToZone?.Invoke(zoneId, mate.ObjId, body);
+         mate.ZoneAnnouncedTo = zoneId;
 --- /dev/null
 +++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
 @@ -0,0 +1,131 @@

@@ -300,7 +300,11 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
     void StartLogin() =>
         Start("login", Path.Combine(LoginDir, "AAEmu.Login.exe"), "", LoginDir, new() { ["DAPROD_TOKEN_SECRET"] = s.TokenSecret });
 
-    void StartWorld() => Start("game", Path.Combine(WorldDir, "AAEmu.World.exe"), "", WorldDir, new() { ["DAPROD_TWEAKS"] = Tweaks.FilePath });
+    void StartWorld()
+    {
+        var p = Start("game", Path.Combine(WorldDir, "AAEmu.World.exe"), "", WorldDir, new() { ["DAPROD_TWEAKS"] = Tweaks.FilePath });
+        try { if (p != null) p.PriorityClass = ProcessPriorityClass.AboveNormal; } catch { } // il World serve tutti i giocatori
+    }
 
     public async Task StartAllAsync()
     {
@@ -448,7 +452,8 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
     {
         try
         {
-            for (var i = 0; i < 180 && Zones.Count(x => x.Running && !x.Loaded) >= 6; i++) await Task.Delay(1000);
+            // con giocatori online carico meno zone alla volta, così il gioco non rallenta
+            for (var i = 0; i < 180 && Zones.Count(x => x.Running && !x.Loaded) >= (Zones.Any(x => PlayersIn(x) > 0) ? 3 : 6); i++) await Task.Delay(1000);
             if (!_wanted || !IsRunning("game") || z.Running || !z.Wanted) return;
             StartZoneProc(z);
         }
@@ -566,6 +571,8 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
             ["AAEMU_ZONE_LOG_NAME"] = z.Key.Replace(':', '_')
         });
         if (z.Proc == null) { log("zone", $"Zona {z.Key}: avvio fallito."); return; }
+        // le zone caricate "in anticipo" cedono il passo a quelle dove si gioca: niente scatti mentre si caricano
+        if (!z.AlwaysOn) try { z.Proc.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
         _job.Add(z.Proc);
         var proc = z.Proc;
         proc.EnableRaisingEvents = true;
@@ -615,7 +622,11 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
     void SetLoaded(uint zoneId, int inst, bool loaded)
     {
         lock (_lock)
-            foreach (var z in _zones.Values.Where(z => z.ZoneId == zoneId && z.Instance == inst)) z.Loaded = loaded;
+            foreach (var z in _zones.Values.Where(z => z.ZoneId == zoneId && z.Instance == inst))
+            {
+                z.Loaded = loaded;
+                if (loaded) try { if (z.Proc is { HasExited: false }) z.Proc.PriorityClass = ProcessPriorityClass.Normal; } catch { }
+            }
     }
 
     static bool PortListening(int port) =>
