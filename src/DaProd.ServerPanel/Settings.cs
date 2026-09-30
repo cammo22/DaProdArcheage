@@ -12,11 +12,15 @@ public sealed class PanelSettings
     // ---- Rete ----
     [Category(Rete), Description("Nome mostrato nel launcher e nell'elenco server del gioco.")]
     public string ServerName { get; set; } = "DaProd ArcheAge";
-    [Category(Rete), Description("Se attivo, l'IP viene preso da solo da Tailscale (gli amici entrano nella tua rete privata).")]
+    [Category(Rete), Description("Rete privata attiva: gli amici entrano nella tua rete senza installare niente e il tuo IP si imposta da solo.")]
     public bool UseTailscale { get; set; } = true;
-    [Category(Rete), Description("IP che i giocatori usano per raggiungerti. Con Tailscale si imposta da solo.")]
+    [Category(Rete), TypeConverter(typeof(VpnEngineConverter)), Description("Motore della rete privata: NetBird (chiave senza scadenza) oppure Tailscale.")]
+    public string VpnEngine { get; set; } = "";
+    [Category(Rete), Description("IP che i giocatori usano per raggiungerti. Con la rete privata si imposta da solo.")]
     public string PublicIp { get; set; } = "127.0.0.1";
-    [Category(Rete), Description("Chiave Tailscale (Reusable + Ephemeral) da login.tailscale.com/admin/settings/keys: finisce nel Pacchetto amici.")]
+    [Category(Rete), Description("NetBird: chiave setup (Reusable, senza scadenza) da app.netbird.io > Setup Keys. Finisce dentro il launcher degli amici.")]
+    public string NetBirdSetupKey { get; set; } = "";
+    [Category(Rete), Description("Tailscale: chiave (Reusable) da login.tailscale.com/admin/settings/keys. Dura al massimo 90 giorni.")]
     public string TailscaleAuthKey { get; set; } = "";
     [Category(Rete)] public int LoginPort { get; set; } = 1237;
     [Category(Rete)] public int GamePort { get; set; } = 1239;
@@ -74,6 +78,10 @@ public sealed class PanelSettings
     public static string DataDir => Path.Combine(Root, "data");
     static string FilePath => Path.Combine(DataDir, "panel.json");
     public const string TailscaleExe = @"C:\Program Files\Tailscale\tailscale.exe";
+    public const string NetBirdExe = @"C:\Program Files\NetBird\netbird.exe";
+    public bool IsNetBird => VpnEngine.Equals("NetBird", StringComparison.OrdinalIgnoreCase);
+    /// <summary>Chiave di rete del motore scelto (vuota se la rete privata è spenta).</summary>
+    public string VpnKey => !UseTailscale ? "" : IsNetBird ? NetBirdSetupKey : TailscaleAuthKey;
 
     public static PanelSettings Load()
     {
@@ -83,6 +91,7 @@ public sealed class PanelSettings
         // migrazioni da versioni precedenti
         if (s.LaunchArgs.Contains("{pwhash}") || s.LaunchArgs.Contains("auth_serveraddr")) s.LaunchArgs = new PanelSettings().LaunchArgs;
         if (string.IsNullOrWhiteSpace(s.Zones) || s.Zones.Split(',').Length < 5) s.Zones = ZoneCatalog.AllOpenWorld;
+        if (string.IsNullOrEmpty(s.VpnEngine)) s.VpnEngine = string.IsNullOrEmpty(s.TailscaleAuthKey) ? "NetBird" : "Tailscale";
         if (string.IsNullOrEmpty(s.TokenSecret)) s.TokenSecret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         return s;
     }
@@ -98,14 +107,27 @@ public sealed class PanelSettings
     /// <summary>Riempie in automatico IP Tailscale.</summary>
     public void AutoDetect()
     {
-        if (UseTailscale && File.Exists(TailscaleExe))
+        if (UseTailscale)
         {
             try
             {
-                var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(TailscaleExe, "ip -4")
-                { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true })!;
-                var ip = p.StandardOutput.ReadLine()?.Trim();
-                p.WaitForExit(5000);
+                string? ip = null;
+                if (IsNetBird && File.Exists(NetBirdExe))
+                {
+                    // "NetBird IP: 100.92.1.5/16"
+                    var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(NetBirdExe, "status")
+                    { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true })!;
+                    var txt = p.StandardOutput.ReadToEnd(); p.WaitForExit(8000);
+                    var m = System.Text.RegularExpressions.Regex.Match(txt, @"NetBird IP:\s*(\d+\.\d+\.\d+\.\d+)");
+                    if (m.Success) ip = m.Groups[1].Value;
+                }
+                else if (!IsNetBird && File.Exists(TailscaleExe))
+                {
+                    var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(TailscaleExe, "ip -4")
+                    { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true })!;
+                    ip = p.StandardOutput.ReadLine()?.Trim();
+                    p.WaitForExit(5000);
+                }
                 if (!string.IsNullOrEmpty(ip)) PublicIp = ip;
             }
             catch { }
@@ -120,7 +142,15 @@ public sealed class PanelSettings
     }
 }
 
-/// <summary>Elenco delle zone del mondo (nome mappa ↔ id), da data\zone_map_names.txt.</summary>
+/// <summary>Menu a tendina per la scelta del motore di rete.</summary>
+public sealed class VpnEngineConverter : StringConverter
+{
+    public override bool GetStandardValuesSupported(ITypeDescriptorContext? c) => true;
+    public override bool GetStandardValuesExclusive(ITypeDescriptorContext? c) => true;
+    public override StandardValuesCollection GetStandardValues(ITypeDescriptorContext? c) => new(new[] { "NetBird", "Tailscale" });
+}
+
+/// <summary>Elenco delle zone del mondo (nome mappa ↔ id), da Resources\zone_map_names.txt.</summary>
 public static class ZoneCatalog
 {
     public const string AllOpenWorld =

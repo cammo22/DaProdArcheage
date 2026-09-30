@@ -15,7 +15,9 @@ public sealed record AuthReply(bool ok, string? message, string? token);
 public sealed class LauncherSettings
 {
     public string ServerUrl { get; set; } = "";
-    public string TailscaleAuthKey { get; set; } = "";
+    /// <summary>Motore della rete privata ("netbird" o "tailscale") e sua chiave.</summary>
+    public string Vpn { get; set; } = "tailscale";
+    public string VpnKey { get; set; } = "";
     public string GameDir { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DaProdArcheage", "Game");
     public string Username { get; set; } = "";
     public bool Remember { get; set; }
@@ -30,14 +32,16 @@ public sealed class LauncherSettings
     {
         LauncherSettings s;
         try { s = JsonSerializer.Deserialize<LauncherSettings>(File.ReadAllText(FilePath)) ?? new(); } catch { s = new(); }
-        try
+        // exe personalizzato dal pannello: indirizzo e chiave sono dentro il file
+        if (Trailer.ReadConfig() is { } cfg) { s.ServerUrl = cfg.api; s.Vpn = cfg.vpn; s.VpnKey = cfg.key; }
+        else try
         {
             var pkg = Path.Combine(AppContext.BaseDirectory, "server.json");
             if (File.Exists(pkg))
             {
                 using var d = JsonDocument.Parse(File.ReadAllText(pkg));
                 if (d.RootElement.TryGetProperty("api", out var a)) s.ServerUrl = a.GetString() ?? s.ServerUrl;
-                if (d.RootElement.TryGetProperty("tailscaleAuthKey", out var k)) s.TailscaleAuthKey = k.GetString() ?? "";
+                if (d.RootElement.TryGetProperty("tailscaleAuthKey", out var k)) { s.VpnKey = k.GetString() ?? ""; s.Vpn = "tailscale"; }
             }
         }
         catch { }

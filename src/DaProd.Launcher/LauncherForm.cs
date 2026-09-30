@@ -12,7 +12,7 @@ public sealed class LauncherForm : Form
     HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
     HttpClient _dl = new() { Timeout = Timeout.InfiniteTimeSpan };
     readonly GameUpdater _updater;
-    TailscaleTunnel? _tunnel;
+    VpnTunnel? _tunnel;
     ServerInfo? _info;
     GameUpdater.Plan? _plan;
     CancellationTokenSource? _cts;
@@ -30,7 +30,7 @@ public sealed class LauncherForm : Form
     readonly CheckBox _remember = new() { Text = "Ricorda credenziali", AutoSize = true, ForeColor = Theme.Text, Font = Theme.Small };
     readonly RoundButton _play = new() { Fill = Theme.Green, Font = Theme.Play, Height = 54 };
     readonly LinkLabel _switch = new() { AutoSize = true, LinkColor = Theme.Gold, ActiveLinkColor = Color.White, Font = Theme.Small };
-    readonly Label _msg = new() { Height = 40, ForeColor = Theme.Muted, Font = Theme.Small };
+    readonly Label _msg = new() { Height = 64, ForeColor = Theme.Muted, Font = Theme.Small };
     readonly Label _gameInfo = new() { AutoSize = true, Font = Theme.Small, ForeColor = Theme.Muted };
     readonly SlimBar _bar = new() { Dock = DockStyle.Top, Height = 8, Maximum = 1000 };
     readonly Label _status = new() { Dock = DockStyle.Fill, ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft, Font = Theme.Small };
@@ -158,21 +158,26 @@ public sealed class LauncherForm : Form
     async Task Connect()
     {
         SetStatus("Collego la rete privata...");
-        await EnsureTailscale();
+        await EnsureVpn();
         SetStatus("Contatto il server...");
         await RefreshInfo();
         if (_info != null) await CheckPatch();
         CheckDx();
     }
 
-    async Task EnsureTailscale()
+    /// <summary>Se il server è su un altro PC, entra nella sua rete privata (NetBird o Tailscale portatile) senza chiedere nulla all'utente.</summary>
+    async Task EnsureVpn()
     {
         var host = new Uri(_s.ServerUrl).Host;
-        if (_tunnel != null || string.IsNullOrWhiteSpace(_s.TailscaleAuthKey) || !TailscaleTunnel.Available || TailscaleTunnel.IsLocal(host)) return;
-        _tunnel = new TailscaleTunnel();
-        await _tunnel.StartAsync(_s.TailscaleAuthKey, SetStatus);
-        _http = new HttpClient(new HttpClientHandler { Proxy = TailscaleTunnel.Proxy, UseProxy = true }) { Timeout = TimeSpan.FromSeconds(15) };
-        _dl = new HttpClient(new HttpClientHandler { Proxy = TailscaleTunnel.Proxy, UseProxy = true }) { Timeout = Timeout.InfiniteTimeSpan };
+        if (_tunnel != null || string.IsNullOrWhiteSpace(_s.VpnKey) || VpnTunnel.IsLocal(host)) return;
+        await Task.Run(Trailer.ExtractTools);
+        var t = VpnTunnel.Create(_s.Vpn);
+        if (t == null) return;
+        try { await t.StartAsync(_s.VpnKey, SetStatus); }
+        catch { t.Dispose(); throw; }
+        _tunnel = t;
+        _http = new HttpClient(new HttpClientHandler { Proxy = t.Proxy, UseProxy = true }) { Timeout = TimeSpan.FromSeconds(15) };
+        _dl = new HttpClient(new HttpClientHandler { Proxy = t.Proxy, UseProxy = true }) { Timeout = Timeout.InfiniteTimeSpan };
     }
 
     async Task RefreshInfo()

@@ -33,7 +33,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Ui.Btn("Ferma", Ui.Red, () => Bg(() => { _srv.StopAll(); return Task.CompletedTask; }), 110));
         bar.Controls.Add(Ui.Btn("Riavvia", Ui.Blue, async () => { await Bg(() => { _srv.StopAll(); return Task.CompletedTask; }); await Task.Delay(2000); await Bg(() => _srv.StartAllAsync()); }, 120));
         bar.Controls.Add(_maintBtn = Ui.Btn(_s.Maintenance ? "Fine manutenzione" : "Manutenzione", _s.Maintenance ? Ui.Green : Ui.Orange, ToggleMaintenance, 180));
-        bar.Controls.Add(Ui.Btn("Pacchetto amici", Ui.Purple, MakeFriendPackage, 160));
+        bar.Controls.Add(Ui.Btn("File per gli amici", Ui.Purple, ShowFriendLauncher, 170));
         bar.Controls.Add(Ui.Btn("Pacchetto dati", Ui.Grey, MakeDataPack, 150));
         bar.Controls.Add(Ui.Btn("Aggiornamenti", Ui.Grey, CheckUpdates, 150));
 
@@ -83,13 +83,18 @@ public sealed partial class MainForm
         }
     }
 
-    async Task MakeFriendPackage()
+    /// <summary>Il launcher per gli amici è un solo exe, sempre aggiornato: qui si trova il file da mandare.</summary>
+    async Task ShowFriendLauncher()
     {
-        if (_s.UseTailscale && string.IsNullOrWhiteSpace(_s.TailscaleAuthKey))
-            MessageBox.Show("Non hai impostato la TailscaleAuthKey: gli amici dovranno entrare nella tua rete a mano.\nCreala su login.tailscale.com > Settings > Keys (Reusable + Ephemeral) e incollala in Impostazioni.");
-        var zip = await Task.Run(() => FriendPackage.Create(_s));
-        Log("panel", "Pacchetto amici creato: " + zip);
-        Process.Start("explorer.exe", $"/select,\"{zip}\"");
+        if (_s.UseTailscale && _s.IsNetBird && !File.Exists(PanelSettings.NetBirdExe))
+            MessageBox.Show("NetBird non è installato su questo PC.\nInstallalo da https://app.netbird.io/install, accedi, poi riprova: gli amici entrano nella rete di questo PC.", "NetBird");
+        else if (_s.UseTailscale && string.IsNullOrWhiteSpace(_s.VpnKey))
+            MessageBox.Show(_s.IsNetBird
+                ? "Manca la chiave setup di NetBird.\nSu app.netbird.io > Setup Keys creane una Reusable e senza scadenza, poi incollala in Impostazioni > NetBirdSetupKey."
+                : "Manca la chiave di Tailscale: incollala in Impostazioni > TailscaleAuthKey.", "Chiave di rete");
+        var exe = await Task.Run(() => FriendLauncher.EnsureBuilt(_s));
+        Log("panel", $"File per gli amici: {exe} ({new FileInfo(exe).Length / 1048576} MB)");
+        Process.Start("explorer.exe", $"/select,\"{exe}\"");
     }
 
     async Task MakeDataPack()

@@ -75,6 +75,7 @@ public sealed partial class MainForm : Form
         Show("Server");
 
         _api.Start();
+        _ = Task.Run(() => { try { FriendLauncher.EnsureBuilt(_s); } catch { } }); // prepara il file per gli amici
         var t = new System.Windows.Forms.Timer { Interval = 1000 };
         t.Tick += async (_, _) => await OnTick();
         t.Start();

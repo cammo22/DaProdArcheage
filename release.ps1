@@ -18,7 +18,7 @@ foreach ($p in "src\DaProd.ServerPanel\DaProd.ServerPanel.csproj", "src\DaProd.L
 # zip: niente dati del gioco, database, MySQL, zone host, impostazioni locali, log, backup
 $stage = Join-Path $env:TEMP "DaProdRelease"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-robocopy $srv $stage /E /XD gioco zoneclient mysql-data mysql zonehost data logs backups PacchettoAmici /XF *.sqlite3 Config.Local.json DaProdGameData.7z PacchettoAmici.zip *.pdb /NFL /NDL /NJH /NJS | Out-Null
+robocopy $srv $stage /E /XD gioco zoneclient mysql-data mysql zonehost data logs backups PacchettoAmici /XF *.sqlite3 Config.Local.json DaProdGameData.7z PacchettoAmici.zip DaProdLauncher-Amici.exe* *.pdb /NFL /NDL /NJH /NJS | Out-Null
 $zip = Join-Path $dist "DaProdServer.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive "$stage\*" $zip
@@ -29,4 +29,4 @@ $ErrorActionPreference = "Continue"
 git -C $root add -A
 git -C $root commit -m "Release $Version" | Out-Null
 git -C $root push
-gh release create "v$Version" $zip "$dist\DaProdLauncher\DaProdLauncher.exe" --repo cammo22/DaProdArcheage --title "DaProd ArcheAge $Version" --generate-notes
+gh release create "v$Version" $zip --repo cammo22/DaProdArcheage --title "DaProd ArcheAge $Version" --generate-notes

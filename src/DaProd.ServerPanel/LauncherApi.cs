@@ -78,7 +78,13 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
             var post = ctx.Request.HttpMethod == "POST";
             if (post && path is "/login" or "/register") { await Auth(ctx, path); return; }
             if (path == "/ping") { ctx.Response.StatusCode = 204; ctx.Response.Close(); return; }
-            if (path == "/launcher.exe") { await SendFile(ctx, Path.Combine(PanelSettings.Root, "launcher", "DaProdLauncher.exe")); return; }
+            if (path == "/launcher.exe")
+            {
+                // la versione personalizzata (con indirizzo e chiave): anche una chiave rinnovata arriva agli amici
+                string exe; try { exe = FriendLauncher.EnsureBuilt(s); } catch { exe = Path.Combine(PanelSettings.Root, "launcher", "DaProdLauncher.exe"); }
+                await SendFile(ctx, exe);
+                return;
+            }
             if (path.StartsWith("/files/"))
             {
                 var full = Path.GetFullPath(Path.Combine(s.ClientDir, path["/files/".Length..]));
@@ -126,6 +132,7 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
         if (partial) ctx.Response.AddHeader("Content-Range", $"bytes {start}-{end}/{fs.Length}");
         var count = end - start + 1;
         ctx.Response.ContentLength64 = count;
+        if (ctx.Request.HttpMethod == "HEAD") { ctx.Response.Close(); return; }   // solo intestazioni
         fs.Seek(start, SeekOrigin.Begin);
         var buf = new byte[1 << 20];
         while (count > 0)
