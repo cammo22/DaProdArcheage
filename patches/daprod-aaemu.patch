@@ -275,7 +275,7 @@
          else
 --- a/AAEmu.Game/Core/Packets/C2G/CSNotifyInGamePacket.cs
 +++ b/AAEmu.Game/Core/Packets/C2G/CSNotifyInGamePacket.cs
-@@ -43,17 +43,47 @@
+@@ -43,17 +43,48 @@
              var body = WorldIntegration.BuildWzUnitStateBody(Connection.ActiveChar);
              if (!WorldIntegration.TryEnterZone(Connection.ActiveChar.ObjId, body))
              {
@@ -311,6 +311,7 @@
 +                        if (connection.ActiveChar == waiting &&
 +                            !EnterWorldManager.Instance.ReturnToCharacterSelect(connection, "the requested zone is not available"))
 +                            connection.Shutdown();
++                        AAEmu.Game.Models.Game.Char.Character.DaProdRescueToSolzreed(waiting.Id);
 +                    }
 +                    catch (Exception ex)
 +                    {
@@ -332,11 +333,36 @@
          // First packet the reference pushes once the context reaches INGAME — enables the client's gameplay
 --- a/AAEmu.Game/Models/Game/Char/Character.cs
 +++ b/AAEmu.Game/Models/Game/Char/Character.cs
-@@ -3144,6 +3144,42 @@
+@@ -3144,6 +3144,68 @@
      }
  
      private CancellationTokenSource _unreleasedZoneTransportedOut;
 +    private int _zoneHandoffWaiting;
++
++    /// <summary>
++    /// DaProd: a zone that never loads (unknown map, crashed host) must not trap the character: after the character has been
++    /// saved and released, its saved position is moved to Solzreed so the next login enters a zone that exists.
++    /// </summary>
++    public static void DaProdRescueToSolzreed(uint characterId)
++    {
++        _ = Task.Run(async () =>
++        {
++            try
++            {
++                await Task.Delay(4000); // after the logout save
++                using var connection = MySQL.CreateConnection();
++                using var command = connection.CreateCommand();
++                command.CommandText = "UPDATE characters SET zone_id=179, x=15578, y=15382, z=126 WHERE id=@id";
++                command.Parameters.AddWithValue("@id", characterId);
++                var rows = command.ExecuteNonQuery();
++                Logger.Warn("DAPROD rescue: character {0} moved to Solzreed ({1} row)", characterId, rows);
++            }
++            catch (Exception ex)
++            {
++                Logger.Error(ex, "DAPROD rescue of character {0} failed", characterId);
++            }
++        });
++    }
 +
 +    /// <summary>DaProd: retries the zone handoff every second until the destination zone is loaded.</summary>
 +    private async Task WaitForZoneHandoffAsync(AAEmu.Game.Core.Network.Connections.GameConnection connection, uint wantedZoneKey)
@@ -362,6 +388,7 @@
 +
 +            Logger.Error("Zone {0} did not load in time for {1}; returning to character select", wantedZoneKey, Name);
 +            EnterWorldManager.Instance.ReturnToCharacterSelect(connection, $"zone {wantedZoneKey} is not available");
++            DaProdRescueToSolzreed(Id);
 +        }
 +        catch (Exception ex)
 +        {
@@ -375,7 +402,7 @@
  
      public override void OnZoneChange(uint lastZoneKey, uint newZoneKey)
      {
-@@ -3194,14 +3230,11 @@
+@@ -3194,14 +3256,11 @@
                      "Zone handoff refused for {0} (ObjId={1}) from zone {2} to {3}; returning to character select",
                      Name, ObjId, lastZoneKey, newZoneKey);
  

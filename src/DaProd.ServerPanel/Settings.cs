@@ -35,7 +35,7 @@ public sealed class PanelSettings
     [Category(Server), Description("Cartella del gioco condivisa con i launcher.")]
     public string ClientDir { get; set; } = Path.Combine(AppContext.BaseDirectory, "gioco");
     [Category(Server), Description("Zone da caricare, separate da virgola. Formato nome oppure nome:istanza. Ogni zona usa circa 1 GB di RAM.")]
-    public string Zones { get; set; } = ZoneCatalog.AllOpenWorld;
+    public string Zones { get; set; } = ZoneCatalog.AllWorld;
     [Category(Server), Description("Zone dinamiche: quelle non 'sempre attive' si caricano quando un giocatore ci entra e si scaricano dopo un po' che sono vuote (risparmia RAM e CPU).")]
     public bool DynamicZones { get; set; } = true;
     [Category(Server), Description("Zone sempre caricate (separate da virgola). Le altre sono dinamiche.")]
@@ -90,7 +90,8 @@ public sealed class PanelSettings
         catch { s = new(); }
         // migrazioni da versioni precedenti
         if (s.LaunchArgs.Contains("{pwhash}") || s.LaunchArgs.Contains("auth_serveraddr")) s.LaunchArgs = new PanelSettings().LaunchArgs;
-        if (string.IsNullOrWhiteSpace(s.Zones) || s.Zones.Split(',').Length < 5) s.Zones = ZoneCatalog.AllOpenWorld;
+        // tutte le zone del mondo (mare, isole, zone chiuse come Diamond Shores...): sono dinamiche, quindi non pesano finché nessuno ci va
+        if (string.IsNullOrWhiteSpace(s.Zones) || !s.Zones.Contains("o_shining_shore_1")) s.Zones = ZoneCatalog.AllWorld;
         if (string.IsNullOrEmpty(s.VpnEngine)) s.VpnEngine = string.IsNullOrEmpty(s.TailscaleAuthKey) ? "NetBird" : "Tailscale";
         if (string.IsNullOrEmpty(s.TokenSecret)) s.TokenSecret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         return s;
@@ -153,11 +154,20 @@ public sealed class VpnEngineConverter : StringConverter
 /// <summary>Elenco delle zone del mondo (nome mappa ↔ id), da Resources\zone_map_names.txt.</summary>
 public static class ZoneCatalog
 {
-    public const string AllOpenWorld =
-        "w_gweonid_forest_1,w_solzreed_3,w_marianople_1,w_garangdol_plains_1,w_solzreed_1,w_white_forest_1,w_lilyut_meadow_1,w_the_carcass_1,w_cross_plains_1," +
-        "w_two_crowns_1,w_cradle_of_genesis_1,w_golden_plains_1,w_bronze_rock_1,w_hell_swamp_1,w_long_sand_1,w_solzreed_2,w_gweonid_forest_2,w_gweonid_forest_3," +
-        "w_marianople_2,w_garangdol_plains_2,w_two_crowns_2,w_bronze_rock_2,w_bronze_rock_3,w_lilyut_meadow_2,w_golden_plains_2,w_golden_plains_3,w_white_forest_2," +
-        "w_long_sand_2,w_hell_swamp_2,w_cross_plains_2,w_mirror_kingdom_1,w_hanuimaru_1,w_the_carcass_2,w_cradle_of_genesis_2,w_hanuimaru_2,w_hanuimaru_3,arche_mall:1";
+    /// <summary>Tutte le zone del mondo aperto (colonna 5 di zone_map_names.txt) più l'Arche Mall.</summary>
+    public static string AllWorld
+    {
+        get
+        {
+            using var st = typeof(ZoneCatalog).Assembly.GetManifestResourceStream("zone_map_names.txt");
+            if (st == null) return "w_solzreed_1,w_solzreed_2,w_solzreed_3,arche_mall:1";
+            using var rd = new StreamReader(st);
+            var names = rd.ReadToEnd().Split('\n').Select(x => x.TrimEnd('\r')).Where(l => l.Length > 0 && l[0] != '#')
+                .Select(l => l.Split('\t')).Where(p => p.Length >= 5 && p[4] == "1").Select(p => p[1]).ToList();
+            names.Add("arche_mall:1");
+            return string.Join(",", names);
+        }
+    }
 
     static Dictionary<string, uint>? _ids;
     static readonly Dictionary<string, int> Groups = new(StringComparer.OrdinalIgnoreCase);

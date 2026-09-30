@@ -25,7 +25,7 @@ $ErrorActionPreference = "Stop"
 dotnet publish "$root\src\DaProd.ServerPanel" -c Release -o $srv
 dotnet publish "$root\src\DaProd.Launcher"    -c Release -o (Join-Path $dist "DaProdLauncher")
 New-Item -ItemType Directory -Force "$srv\launcher" | Out-Null
-Copy-Item "$dist\DaProdLauncher\DaProdLauncher.exe" "$srv\launcher\" -Force   # copia usata da "Pacchetto amici" e dall'aggiornamento automatico
+try { Copy-Item "$dist\DaProdLauncher\DaProdLauncher.exe" "$srv\launcher\" -Force -ErrorAction Stop } catch { Write-Warning "launcher\DaProdLauncher.exe in uso: non aggiornato." }   # copia usata da "Pacchetto amici" e dall'aggiornamento automatico
 
 # --- 3) server: Login, Game (contenuti), World (logica + gestione zone)
 dotnet publish "$AAEmu\AAEmu.Login\AAEmu.Login.csproj" -c Release -o "$srv\server\bin\login"
