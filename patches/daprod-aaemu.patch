@@ -919,9 +919,35 @@
  
          character.SendPacket(new SCItemSocketingLunastoneResultPacket(true, targetItem.Id, skillItem.ItemTemplateId));
          character.SendPacket(new SCItemTaskSuccessPacket(ItemTaskType.EnchantMagical,
+--- a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ItemEvolvingReRollBase.cs
++++ b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ItemEvolvingReRollBase.cs
+@@ -136,6 +136,13 @@
+         owner.SendPacket(new SCItemReRollEvolvingResultPacket(equipItem.Id,
+             (byte)ItemGradeEnchantResult.Success, changedAttribute, before, after));
+ 
++        // DaProd: keep the old line in case the new one is worse; "/annulla" puts it back
++        if (DaProdTweaks.On("rerollUndo") && changedAttribute)
++        {
++            DaProdGameplay.StashReroll(owner.Id, equipItem.Id, index, beforeGroupId, afterGroupId);
++            owner.SendMessage("Effetto sostituito. Se il nuovo non ti piace scrivi /annulla in chat per rimettere il vecchio (e riavere il tentativo).");
++        }
++
+         Logger.Debug("{0}: {1} re-rolled slot {2} of item {3}: group {4} -> {5}",
+             effectName, owner.Name, index, equipItem.Id, beforeGroupId, afterGroupId);
+     }
+--- a/AAEmu.Game/Configurations/AccessLevels.json
++++ b/AAEmu.Game/Configurations/AccessLevels.json
+@@ -4,6 +4,7 @@
+         // Always keep help at zero
+         "help": 0,
+     "gearscore": 0,
++    "annulla": 0,
+         "fly": 0,
+         
+         "online": 0,
 --- /dev/null
 +++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,172 @@
 +using System.Runtime.CompilerServices;
 +using AAEmu.Commons.Utils.DB;
 +using AAEmu.Game.Core.Managers;
@@ -1011,7 +1037,7 @@
 +            string result;
 +            try
 +            {
-+                var character = kind is "gold" or "labor" or "passpoints" or "honor" or "vocation" or "item" ? WorldManager.Instance.GetCharacterById(charId) : null;
++                var character = kind is "gold" or "labor" or "passpoints" or "honor" or "vocation" or "item" or "delitem" ? WorldManager.Instance.GetCharacterById(charId) : null;
 +                if (kind == "labor")
 +                    result = FillLabor(c, charId, character);
 +                else if (kind == "passpoints")
@@ -1021,6 +1047,15 @@
 +                {
 +                    CashShopManager.Instance.Load();
 +                    result = "online";
++                }
++                else if (kind == "delitem")
++                {
++                    var itemId = (uint)(amount / 1_000_000);
++                    var qty = (int)(amount % 1_000_000);
++                    if (character == null)
++                        result = "personaggio non collegato";
++                    else
++                        result = character.Inventory.ConsumeItem(null, ItemTaskType.Destroy, itemId, Math.Max(1, qty), null) > 0 ? "online" : "oggetto non trovato";
 +                }
 +                else if (kind == "item")
 +                {
@@ -1205,7 +1240,7 @@
 +}
 --- /dev/null
 +++ b/AAEmu.Game/DaProdGameplay.cs
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,90 @@
 +using AAEmu.Game.Core.Packets;
 +using AAEmu.Game.Models.Game.Char;
 +using NLog;
@@ -1232,6 +1267,47 @@
 +            return false;
 +        _dailyQuests ??= [.. GameData.TodayQuestGameData.Instance.AllGroups.SelectMany(g => g.QuestContextIds)];
 +        return _dailyQuests.Contains(questId);
++    }
++
++    private sealed record RerollStash(ulong ItemId, int Index, uint Before, uint After, DateTime At);
++    private static readonly Dictionary<uint, RerollStash> _rerolls = [];
++
++    /// <summary>Remembers the line a "Replace Effect" just overwrote, so the player can take the old one back.</summary>
++    public static void StashReroll(uint characterId, ulong itemId, int index, uint before, uint after)
++    {
++        lock (_rerolls)
++            _rerolls[characterId] = new RerollStash(itemId, index, before, after, DateTime.UtcNow);
++    }
++
++    /// <summary>Puts the previous effect line back (and gives back the change attempt). Returns the message for the player.</summary>
++    public static string UndoReroll(Character character)
++    {
++        RerollStash stash;
++        lock (_rerolls)
++        {
++            if (!_rerolls.TryGetValue(character.Id, out stash))
++                return "Non c'è nessuna sostituzione da annullare.";
++        }
++
++        if (DateTime.UtcNow - stash.At > TimeSpan.FromMinutes(30))
++            return "L'ultima sostituzione è di più di 30 minuti fa: non si può più annullare.";
++        if (character.Inventory.GetItemById(stash.ItemId) is not Models.Game.Items.EquipItem item)
++            return "L'oggetto non c'è più.";
++        var groups = item.RndAttrGroupIds;
++        if (groups == null || stash.Index >= groups.Length || groups[stash.Index] != stash.After)
++            return "L'oggetto è cambiato dopo la sostituzione: non posso annullare.";
++
++        groups[stash.Index] = stash.Before;
++        item.RndAttrGroupIds = groups;
++        if (item.EvolveChance < 5)
++            item.EvolveChance++;
++        item.IsDirty = true;
++        character.SendPacket(new Core.Packets.G2C.SCItemDetailUpdatedPacket(item));
++        if (item.SlotType == Models.Game.Items.SlotType.Equipment)
++            character.UpdateGearBonuses(null, null);
++        lock (_rerolls)
++            _rerolls.Remove(character.Id);
++        return "Effetto precedente rimesso.";
 +    }
 +
 +    /// <summary>Pack opened by the HUD "random shop" button (no NPC): the Manastorm shop when enabled.</summary>
@@ -1412,5 +1488,34 @@
 +    public static void Queue(uint characterId)
 +    {
 +        TaskManager.Instance.Schedule(new DaProdTodayRefreshTask(characterId), TimeSpan.FromMilliseconds(900));
++    }
++}
+--- /dev/null
++++ b/AAEmu.Game/Scripts/Commands/Annulla.cs
+@@ -0,0 +1,26 @@
++using AAEmu.Game.Core.Managers;
++using AAEmu.Game.Models.Game;
++using AAEmu.Game.Models.Game.Char;
++using AAEmu.Game.Utils.Scripts;
++
++namespace AAEmu.Game.Scripts.Commands;
++
++/// <summary>DaProd: /annulla puts back the effect line that the last "Replace Effect" overwrote.</summary>
++public class Annulla : ICommand
++{
++    public string[] CommandNames { get; set; } = ["annulla", "undoeffect"];
++
++    public void OnLoad()
++    {
++        CommandManager.Instance.Register(CommandNames, this);
++    }
++
++    public string GetCommandLineHelp() => "";
++
++    public string GetCommandHelpText() => "Rimette l'effetto vecchio dopo un Replace Effect (entro 30 minuti).";
++
++    public void Execute(Character character, string[] args, IMessageOutput messageOutput)
++    {
++        CommandManager.SendNormalText(this, messageOutput, DaProdGameplay.UndoReroll(character));
 +    }
 +}

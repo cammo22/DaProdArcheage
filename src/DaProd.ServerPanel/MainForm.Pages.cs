@@ -252,6 +252,15 @@ public sealed partial class MainForm
             var qty = parts.Length > 1 && int.TryParse(parts[1], out var q) ? q : 1;
             MessageBox.Show(await Bg2(() => _srv.GiveItemAsync(id, item, qty)), "Dai oggetto");
         }, 140));
+        b2.Controls.Add(Ui.Btn("Togli oggetto", Ui.Red, async () =>
+        {
+            if (SelId(_chars, "id") is not { } id) { MessageBox.Show("Seleziona un personaggio."); return; }
+            var v = Ui.Prompt(this, "ID oggetto da togliere e quantità (es. \"12201 1\"). Serve per eliminare oggetti rotti (con la X).", "12201 1");
+            var parts = (v ?? "").Split([' ', 'x', ',', ';'], StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0 || !uint.TryParse(parts[0], out var item)) return;
+            var qty = parts.Length > 1 && int.TryParse(parts[1], out var q) ? q : 1;
+            MessageBox.Show(await Bg2(() => _srv.DeleteItemAsync(id, item, qty)), "Togli oggetto");
+        }, 140));
         b2.Controls.Add(Ui.Btn("Punti onore", Ui.Purple, async () =>
         {
             if (SelId(_chars, "id") is not { } id) { MessageBox.Show("Seleziona un personaggio."); return; }

@@ -18,6 +18,7 @@ public static class Tweaks
         new("geoData", "Memoria", "Navigazione precisa dei dungeon (GeoData)", 0, "1 = carica i dati di navigazione (circa 1 GB di RAM in più). 0 = usa le mappe di altezza. Serve riavvio del server."),
         new("dailyInstant", "Missioni", "Daily Contract: completamento istantaneo", 1, "1 = appena accetti un Daily Contract (Orario giornaliero) la missione si completa da sola e dà il premio. 0 = vanno fatte davvero."),
         new("allRecipes", "Mestieri", "Folio: tutte le ricette utilizzabili", 1, "1 = anche le ricette che richiedono un oggetto-ricetta si possono creare senza averlo imparato."),
+        new("rerollUndo", "Sintesi", "Replace Effect: si può annullare", 1, "1 = dopo aver sostituito un effetto puoi scrivere /annulla in chat per rimettere quello vecchio (entro 30 minuti) e riavere il tentativo."),
         new("dailyAuto", "Missioni", "Daily Contract: si completano da sole", 1, "1 = finiti gli obiettivi di un Daily Contract la missione si chiude da sola e dà subito i premi (senza consegna a un PNG). 0 = comportamento originale."),
         new("dailyFreeUnlock", "Missioni", "Daily Schedule: sblocco gratis", 1, "1 = le missioni giornaliere a pagamento si sbloccano senza consumare l'oggetto richiesto."),
         new("dailyResetsMax", "Missioni", "Daily Schedule: cambi missione al giorno", 99, "Quante volte al giorno si può premere \"Cambia missione\" (3 = originale)."),

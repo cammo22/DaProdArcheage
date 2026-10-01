@@ -873,6 +873,14 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
         return r == null ? NoAnswer : r == "online" ? "Oggetto consegnato in borsa." : r == "borsa piena" ? "La borsa del personaggio è piena." : r == "oggetto sconosciuto" ? "ID oggetto sconosciuto." : r == "personaggio non collegato" ? "Il personaggio deve essere in gioco." : "Esito: " + r;
     }
 
+    /// <summary>Toglie un oggetto dalla borsa/equipaggiamento di un personaggio (deve essere in gioco).</summary>
+    public async Task<string> DeleteItemAsync(long charId, uint itemId, int count)
+    {
+        if (!IsRunning("game")) return "Server spento.";
+        var r = await RunCommandAsync("delitem", charId, itemId * 1_000_000L + Math.Clamp(count, 1, 999_999));
+        return r == null ? NoAnswer : r == "online" ? "Oggetto tolto." : r == "oggetto non trovato" ? "Il personaggio non ha quell'oggetto." : r == "personaggio non collegato" ? "Il personaggio deve essere in gioco." : "Esito: " + r;
+    }
+
     /// <summary>Aggiunge punti vocazione (vocation badges) a un personaggio.</summary>
     public Task<string> GiveVocationAsync(long charId, long points) => GivePointsAsync("vocation", "vocation_point", "Punti vocazione", charId, points);
 
