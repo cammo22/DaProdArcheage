@@ -552,7 +552,26 @@
          character.SendPacket(new SCTodayAssignmentResetCountPacket(used, PersonalResetCountType));
      }
  
-@@ -124,6 +131,7 @@
+@@ -103,6 +110,18 @@
+         }
+     }
+ 
++    /// <summary>DaProd: sends the daily schedule and the Arche Pass state again (what login does), so open windows redraw.</summary>
++    public void DaProdRefresh(Character character)
++    {
++        if (character == null)
++            return;
++        SendResetCount(character);
++        if (TryGetCharState(character.Id, out var byStep))
++            foreach (var (realStep, state) in byStep)
++                SendState(character, realStep, state, init: true);
++        character.ArchePass?.SendLogin();
++    }
++
+     /// <summary>
+     /// Load today's assignments from MySQL and push SC to the client (NotifyInGame).
+     /// </summary>
+@@ -124,6 +143,7 @@
              if (state.Status == TodayAssignmentStatus.Done)
                  DropSiblingQuests(character, state.GroupId, keepQuestId: state.QuestContextId);
          }
@@ -560,7 +579,7 @@
      }
  
      public void HandleRequest(Character character, uint realStep, sbyte request)
-@@ -222,12 +230,12 @@
+@@ -222,12 +242,12 @@
          var maxDailyResets = isPrivateExpedition
              ? (uint)Math.Clamp(ExpeditionManager.Instance.GetContentConfig(
                  "expedition_today_quest_change_count", MaxDailyResets), 0, uint.MaxValue)
@@ -575,7 +594,7 @@
              return;
          if (used >= maxDailyResets)
          {
-@@ -519,6 +527,18 @@
+@@ -519,6 +539,18 @@
          }
      }
  
@@ -594,15 +613,16 @@
      private void CompleteStep(
          Character character,
          uint realStep,
-@@ -537,6 +557,7 @@
+@@ -537,6 +569,8 @@
  
          SendState(character, realStep, state, init: false);
          DropSiblingQuests(character, state.GroupId, keepQuestId: completedQuestId);
 +        DaProdTodayGoals.TryGrant(character, CountDonePersonal(character.Id));
++        DaProdTodayRefreshTask.Queue(character.Id);
  
          Logger.Info(
              "TodayAssignment done {0}: realStep={1} group={2} quest={3}",
-@@ -617,7 +638,7 @@
+@@ -617,7 +651,7 @@
      /// </summary>
      private static bool TryConsumeUnlockCost(Character character, TodayQuestStepTemplate step, uint realStep)
      {
@@ -611,7 +631,7 @@
              return true;
  
          if (!character.Inventory.CheckItems(SlotType.Inventory, step.ItemId, step.ItemNum))
-@@ -741,6 +762,23 @@
+@@ -741,6 +775,23 @@
          Persist(character.Id, realStep, state);
          SendState(character, realStep, state, init: false);
          SendResetCount(character);
@@ -635,7 +655,7 @@
  
          Logger.Info(
              "TodayAssignment accepted {0}: realStep={1} group={2} quest={3}",
-@@ -1259,8 +1297,8 @@
+@@ -1259,8 +1310,8 @@
              }
  
              var used = reader.GetUInt32("resets_used");
@@ -766,6 +786,139 @@
              Owner.Recipes is { } recipeBook &&
              !recipeBook.IsLearned(craft.Id))
          {
+--- a/AAEmu.Game/GameData/ItemEnchantGameData.cs
++++ b/AAEmu.Game/GameData/ItemEnchantGameData.cs
+@@ -1,3 +1,4 @@
++using AAEmu.Game.Core.Managers;
+ using AAEmu.Commons.Utils;
+ using AAEmu.Game.GameData.Framework;
+ using AAEmu.Game.Models.Game.Items;
+@@ -224,6 +225,26 @@
+     /// so lifting it there needs a patch to the client database; this only stops the server from
+     /// enforcing a ceiling the data does not mean.
+     /// </remarks>
++    /// <summary>
++    /// DaProd: pools priced "per grade left". For the story-quest gear (live.19.07.main.*, 38 pools) the shipped ceiling
++    /// (max_evolving_grade) is exactly one grade above the last priced rung, so grade_exp[g] is the experience needed to LEAVE
++    /// grade g - the same reading the client uses for its "Current XP 14/14" bar and for the XP quoted in the window - and the
++    /// ceiling itself is the top. Reading those rungs as "price of the grade they lead into" left a piece stuck at Grand with a
++    /// full bar while the window kept announcing Arcane.
++    /// </summary>
++    public bool IsLeavePriced(uint categoryId)
++    {
++        var category = GetRndAttrCategory(categoryId);
++        if (category == null || category.MaxEvolvingGrade < 0)
++            return false;
++        var maxGrade = ItemManager.Instance.GetGradeTemplate((int)category.MaxEvolvingGrade);
++        var topGrade = ItemManager.Instance.GetGradeTemplate(GetLadderTop(categoryId));
++        return maxGrade != null && topGrade != null && maxGrade.GradeOrder > topGrade.GradeOrder;
++    }
++
++    /// <summary>Highest grade of a leave-priced pool: its shipped ceiling.</summary>
++    public byte GetLeaveTop(uint categoryId) => (byte)(GetRndAttrCategory(categoryId)?.MaxEvolvingGrade ?? 0);
++
+     public byte GetLadderTop(uint categoryId)
+     {
+         return _ladderTops.TryGetValue(categoryId, out var top) ? top : (byte)0;
+@@ -259,7 +280,7 @@
+     /// </remarks>
+     public (byte Grade, uint SectionExp) PlaceCumulativeExp(uint categoryId, uint total)
+     {
+-        var top = GetLadderTop(categoryId);
++        var top = IsLeavePriced(categoryId) ? GetLeaveTop(categoryId) : GetLadderTop(categoryId);
+         byte grade = 0;
+         var left = total;
+         while (grade < top && grade < byte.MaxValue)
+@@ -281,6 +302,21 @@
+     /// </summary>
+     public uint GetExpToMaxGrade(uint categoryId, byte grade, uint sectionExp)
+     {
++        if (IsLeavePriced(categoryId))
++        {
++            // walk the grades in the client's order (Crude sits below Basic), each billing the cost of leaving it
++            var leaveTop = ItemManager.Instance.GetGradeTemplate(GetLeaveTop(categoryId));
++            var cur = ItemManager.Instance.GetGradeTemplate(grade);
++            var total = 0u;
++            while (cur != null && leaveTop != null && cur.GradeOrder < leaveTop.GradeOrder)
++            {
++                total += GetGradeExp(categoryId, (byte)cur.Grade);
++                cur = ItemManager.Instance.GetGradeTemplateByOrder(cur.GradeOrder + 1);
++            }
++
++            return total > sectionExp ? total - sectionExp : 0;
++        }
++
+         var top = GetLadderTop(categoryId);
+         if (grade >= top)
+             return 0;
+--- a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ItemEvolving.cs
++++ b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ItemEvolving.cs
+@@ -301,6 +301,35 @@
+     {
+         var added = new List<ItemRndAttrUnitModifier>();
+ 
++        // DaProd: story-quest pools are priced per grade left (see ItemEnchantGameData.IsLeavePriced)
++        if (ItemEnchantGameData.Instance.IsLeavePriced(categoryId))
++        {
++            var topGrade = ItemManager.Instance.GetGradeTemplate(ItemEnchantGameData.Instance.GetLeaveTop(categoryId));
++            while (topGrade != null)
++            {
++                var current = ItemManager.Instance.GetGradeTemplate(equipItem.Grade);
++                var step = NextGrade(equipItem.Grade);
++                if (current == null || step == null || current.GradeOrder >= topGrade.GradeOrder)
++                    break;
++
++                var cost = ItemEnchantGameData.Instance.GetGradeExp(categoryId, equipItem.Grade);
++                if (cost > 0 && equipItem.EvolvingExp < cost)
++                    break;
++
++                equipItem.EvolvingExp -= Math.Min(equipItem.EvolvingExp, cost);
++                equipItem.Grade = step.Value;
++                if (equipItem.EvolveChance < MaxChangeAttempts)
++                    equipItem.EvolveChance++;
++                added.AddRange(TopUpAttributes(equipItem, categoryId));
++            }
++
++            var reached = ItemManager.Instance.GetGradeTemplate(equipItem.Grade);
++            if (reached != null && topGrade != null && reached.GradeOrder >= topGrade.GradeOrder)
++                equipItem.EvolvingExp = 0; // top of the ladder: nothing left to bank
++            added.AddRange(TopUpAttributes(equipItem, categoryId));
++            return added;
++        }
++
+         while (true)
+         {
+             var next = NextGrade(equipItem.Grade);
+--- a/AAEmu.Game/Models/Game/Units/Unit.cs
++++ b/AAEmu.Game/Models/Game/Units/Unit.cs
+@@ -1728,6 +1728,17 @@
+                 itemProcIds.AddRange(ItemManager.Instance.GetItemProcIds(gem));
+             }
+ 
++            // DaProd: the lunastone ("Lunafrost") in the piece's rune slot. It used to be stored and shown but never counted.
++            if (ei.RuneId != 0)
++            {
++                foreach (var template in ItemManager.Instance.GetUnitModifiers(ei.RuneId))
++                    AddBonus(GearBonusesIndex, new Bonus { Template = template, Value = template.Value });
++
++                SkillModifiersCache.AddItemModifiers(ei.RuneId);
++                BuffModifiersCache.AddItemModifiers(ei.RuneId);
++                itemProcIds.AddRange(ItemManager.Instance.GetItemProcIds(ei.RuneId));
++            }
++
+             // Synthesis effects. The item stores the effect's group; what it is worth follows from
+             // the grade the piece is at and how far into it the piece has come, so a line grows both
+             // when a grade is gained and as the bar toward the next one fills.
+--- a/AAEmu.Game/Models/Game/World/Interactions/MagicalEnchant.cs
++++ b/AAEmu.Game/Models/Game/World/Interactions/MagicalEnchant.cs
+@@ -28,6 +28,7 @@
+             return;
+ 
+         equipItem.RuneId = skillItem.ItemTemplateId;
++        equipItem.IsDirty = true; // DaProd: without this the lunastone was lost at the next save
+ 
+         character.SendPacket(new SCItemSocketingLunastoneResultPacket(true, targetItem.Id, skillItem.ItemTemplateId));
+         character.SendPacket(new SCItemTaskSuccessPacket(ItemTaskType.EnchantMagical,
 --- /dev/null
 +++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
 @@ -0,0 +1,163 @@
@@ -1230,5 +1383,34 @@
 +        {
 +            Logger.Warn(ex, "DAPROD today goal reward failed for {0}", character.Name);
 +        }
++    }
++}
+--- /dev/null
++++ b/AAEmu.Game/DaProdTodayRefreshTask.cs
+@@ -0,0 +1,26 @@
++using AAEmu.Game.Core.Managers;
++using AAEmu.Game.Core.Managers.World;
++using AAEmu.Game.Models.Tasks;
++
++namespace AAEmu.Game;
++
++/// <summary>
++/// DaProd: a moment after a daily contract or an Arche Pass mission finishes, the character's whole daily/pass state is sent again,
++/// exactly as at login, so the open windows redraw by themselves instead of waiting for the player to close and reopen them.
++/// </summary>
++public sealed class DaProdTodayRefreshTask(uint characterId) : AAEmu.Game.Models.Tasks.Task
++{
++    public override void Execute()
++    {
++        var character = WorldManager.Instance.GetCharacterById(characterId);
++        if (character == null)
++            return;
++        TodayAssignmentManager.Instance.DaProdRefresh(character);
++    }
++
++    /// <summary>Queues one refresh (a burst of completions collapses into the same moment).</summary>
++    public static void Queue(uint characterId)
++    {
++        TaskManager.Instance.Schedule(new DaProdTodayRefreshTask(characterId), TimeSpan.FromMilliseconds(900));
 +    }
 +}

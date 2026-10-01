@@ -61,7 +61,8 @@ def tab_pos(t):
     pos[t] = pos.get(t, 0) + 1
     return pos[t]
 
-for iid in sorted(items):
+FIRST = [48507, 48508, 48509, 54334, 47852, 47853, 47854, 48845, 48846, 48847, 54335]   # Story Quest Infusion (da identificare e non) in cima alla scheda
+for iid in sorted(items, key=lambda i: (FIRST.index(i) if i in FIRST else 99, i)):
     cat, stack = items[iid]
     tabs = MAP.get(cat, [(2, 1), (2, 2)] if iid in TICKETS else [])
     if iid in TICKETS: tabs = [(1, 2), (2, 1), (2, 2)]
@@ -69,7 +70,8 @@ for iid in sorted(items):
     shop_id += 1
     shops.append(f"({shop_id}, 0, NULL, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, 0, -1)")
     counts = [1]
-    if stack >= 10 and cat not in (83, 84, 85, 69, 70, 71, 72, 73, 74, 75, 76, 77, 79, 92, 118, 10) : counts = [1, 10]
+    if iid in FIRST and stack >= 100: counts = [1, 10, 100]
+    elif stack >= 10 and cat not in (83, 84, 85, 69, 70, 71, 72, 73, 74, 75, 76, 77, 79, 92, 118, 10) : counts = [1, 10]
     for k, cnt in enumerate(counts):
         sku_id += 1
         skus.append(f"({sku_id}, {shop_id}, {k}, {iid}, {cnt}, 0, {1 if k == 0 else 0}, 0, NULL, 0, 0, 0, 0, 0)")
