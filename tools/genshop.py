@@ -33,6 +33,11 @@ add([7], (3, 1), (3, 5))                           # mobili
 # oggetti sempre presenti (biglietti pass)
 TICKETS = [48543, 47617, 50633, 50634, 52145, 54232, 45508, 47852, 47853, 47854, 48845, 48846, 48847, 54335]  # biglietti pass, cristalli Manastorm, Story Quest Infusion
 
+# tutti gli oggetti "Infusion" (tools/geninfusions.py) stanno nelle schede in evidenza
+INF = os.path.join(BASE, "src", "DaProd.ServerPanel", "Resources", "infusions.txt")
+if os.path.exists(INF):
+    TICKETS = sorted(set(TICKETS) | {int(l.split("	")[0]) for l in open(INF, encoding="utf-8") if l.strip() and not l.startswith("#")})
+
 s = sqlite3.connect(DATA)
 l = sqlite3.connect(LANG)
 en = {r[0]: r[1] for r in l.execute("select idx,en_us from localized_texts where tbl_name='items' and tbl_column_name='name'")}

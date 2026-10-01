@@ -61,6 +61,8 @@ Il pacchetto dati si crea sul PC dove tutto funziona con **Server > Pacchetto da
 - **Nomi** (Regole > Nomi): cambia come il gioco chiama città, PNG, oggetti (di serie Marianople = MariaNapoli, Marilolo = Mariuolo). Il database del client parte SEMPRE da quello inglese (`zoneclient\game\db\compact_en.sqlite3`, o `..\langpatch` sul PC di sviluppo): quello coreano non va mai dato ai giocatori.
 - **Launcher**: splash "Ponticheage" (`python tools/makesplash.py`), finestra adattiva (mai più grande dello schermo, in colonna se stretta). `--nosplash` la salta.
 - **Release**: `release.ps1` pubblica il pannello (zip) e `DaProdLauncher-Amici.exe`, il launcher GIÀ CONFIGURATO (indirizzo, NetBird e chiave): la repo deve restare privata.
+- **Giornaliere** (Regole > Missioni): i Daily Contract si chiudono da soli appena finiti gli obiettivi (`dailyAuto`), anche subito all'accettazione (`dailyInstant`); sblocco gratis; cambi missione al giorno a piacere; i premi dell'obiettivo giornaliero (Gilda Star, Giftbox...) ora arrivano davvero (`DaProdTodayGoals.cs`).
+- **Infusion**: tutti gli oggetti Infusion del gioco stanno nello shop (schede in evidenza) e nei mercanti generici (lista `Resources\infusions.txt`, `python tools/geninfusions.py`). Giocatori > Dai oggetto li mette in borsa per ID.
 - **Gioca**: il pulsante "Gioca (apri il launcher)" del pannello apre il launcher su questo PC.
 - Icone: `python tools/makeicons.py`.
 

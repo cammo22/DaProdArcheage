@@ -4,7 +4,7 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
-    <Version>1.7.0</Version>
+    <Version>1.8.0</Version>
     <ApplicationIcon>Assets\server.ico</ApplicationIcon>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>DaProdServer</AssemblyName>
@@ -16,6 +16,7 @@
   <ItemGroup>
     <EmbeddedResource Include="Resources\zone_map_names.txt" LogicalName="zone_map_names.txt" />
     <EmbeddedResource Include="Resources\zone_neighbors.txt" LogicalName="zone_neighbors.txt" />
+    <EmbeddedResource Include="Resources\infusions.txt" LogicalName="infusions.txt" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="MySqlConnector" Version="2.4.0" />

@@ -14,8 +14,21 @@ public static class GameData
     /// <summary>NPC "General Merchant" del gioco (id = indice del testo).</summary>
     static readonly uint[] GeneralMerchants = [206, 216, 975, 1045, 3579, 3581, 3582, 3966, 17366];
 
-    /// <summary>Venduti dai mercanti generici: Story Quest Infusion (rank 1-3 e generica) e Manastorm Crystal.</summary>
-    public static readonly uint[] MerchantItems = [47852, 47853, 47854, 48845, 48846, 48847, 54335, 45508];
+    /// <summary>Venduti dai mercanti generici: Manastorm Crystal e tutti gli oggetti Infusion del gioco (Resources\infusions.txt).</summary>
+    public static readonly uint[] MerchantItems = BuildMerchantItems();
+
+    static uint[] BuildMerchantItems()
+    {
+        var ids = new List<uint> { 45508, 47852, 47853, 47854, 48845, 48846, 48847, 54335 };
+        using var st = typeof(GameData).Assembly.GetManifestResourceStream("infusions.txt");
+        if (st != null)
+        {
+            using var rd = new StreamReader(st);
+            foreach (var l in rd.ReadToEnd().Split('\n').Select(x => x.TrimEnd('\r')).Where(l => l.Length > 0 && l[0] != '#'))
+                if (uint.TryParse(l.Split('\t')[0], out var id) && !ids.Contains(id)) ids.Add(id);
+        }
+        return [.. ids];
+    }
 
     /// <summary>Istanze che restano: i dungeon (PvE) e i luoghi collegati alle loro quest.</summary>
     static readonly string[] DungeonPrefixes =
@@ -33,6 +46,59 @@ public static class GameData
         var n = zoneName.Trim().ToLowerInvariant();
         var isInstance = n.StartsWith("instance_") || n.StartsWith("test_instance") || n.StartsWith("zone_instance") || n.StartsWith("zonegroup_instance") || n == "test_arcaneearth";
         return isInstance && !DungeonPrefixes.Any(p => n.StartsWith(p));
+    }
+
+
+    /// <summary>
+    /// I mercanti generici vendono gratis i MerchantItems. Le liste dei negozi le legge il CLIENT dal proprio database (il server controlla
+    /// solo l'acquisto), quindi va applicato a entrambi: a bin\game\Data\compact.sqlite3 e al database del client.
+    /// </summary>
+    public static int ApplyMerchants(SqliteConnection c)
+    {
+        int Sql(string sql, params (string, object)[] ps)
+        {
+            using var cmd = c.CreateCommand(); cmd.CommandText = sql;
+            foreach (var (k, v) in ps) cmd.Parameters.AddWithValue(k, v);
+            return cmd.ExecuteNonQuery();
+        }
+        long Scalar(string sql)
+        {
+            using var cmd = c.CreateCommand(); cmd.CommandText = sql;
+            return Convert.ToInt64(cmd.ExecuteScalar() ?? 0);
+        }
+
+        using var tx = c.BeginTransaction();
+        var nextGood = Scalar("SELECT COALESCE(MAX(id),0) FROM merchant_goods") + 1;
+        var nextPack = Math.Max(9_000_000, Scalar("SELECT COALESCE(MAX(id),0) FROM merchant_packs") + 1);
+        var nextMerchant = Math.Max(9_000_000, Scalar("SELECT COALESCE(MAX(id),0) FROM merchants") + 1);
+        var added = 0;
+        foreach (var npc in GeneralMerchants)
+        {
+            var pack = Scalar($"SELECT COALESCE(MIN(merchant_pack_id),0) FROM merchants WHERE npc_id={npc}");
+            if (pack == 0)
+            {
+                pack = nextPack++;
+                Sql("INSERT INTO merchant_packs (id, name, owner_npc_id, kind_id, item_point_id, item_point_icon, item_point_icon_key) VALUES (@i, @n, @o, 0, 0, '', '')", ("@i", pack), ("@n", "daprod.npc." + npc), ("@o", npc));
+                Sql("INSERT INTO merchants (id, npc_id, merchant_pack_id) VALUES (@i, @n, @p)", ("@i", nextMerchant++), ("@n", npc), ("@p", pack));
+            }
+            var have = new HashSet<long>();
+            using (var q = c.CreateCommand())
+            {
+                q.CommandText = $"SELECT item_id FROM merchant_goods WHERE merchant_pack_id={pack} AND grade_id=0";
+                using var r = q.ExecuteReader();
+                while (r.Read()) have.Add(r.GetInt64(0));
+            }
+            var order = 1000;
+            foreach (var item in MerchantItems)
+            {
+                if (have.Contains(item)) { order++; continue; }
+                Sql("INSERT INTO merchant_goods (id, merchant_pack_id, item_id, grade_id, enable, view_order, cost, purchase_type_id, purchase_limit) VALUES (@i, @p, @t, 0, 't', @o, 0, 1, 0)",
+                    ("@i", nextGood++), ("@p", pack), ("@t", item), ("@o", order++));
+                added++;
+            }
+        }
+        tx.Commit();
+        return added;
     }
 
     public static string Apply(Action<string> log)
@@ -55,33 +121,8 @@ public static class GameData
         }
 
         // ---- mercanti generici ----
-        using (var tx = c.BeginTransaction())
-        {
-            var nextGood = Scalar("SELECT COALESCE(MAX(id),0) FROM merchant_goods") + 1;
-            var nextPack = Math.Max(9_000_000, Scalar("SELECT COALESCE(MAX(id),0) FROM merchant_packs") + 1);
-            var nextMerchant = Math.Max(9_000_000, Scalar("SELECT COALESCE(MAX(id),0) FROM merchants") + 1);
-            var added = 0;
-            foreach (var npc in GeneralMerchants)
-            {
-                var pack = Scalar($"SELECT COALESCE(MIN(merchant_pack_id),0) FROM merchants WHERE npc_id={npc}");
-                if (pack == 0)
-                {
-                    pack = nextPack++;
-                    Sql("INSERT INTO merchant_packs (id, name, owner_npc_id, kind_id, item_point_id, item_point_icon, item_point_icon_key) VALUES (@i, @n, @o, 0, 0, '', '')", ("@i", pack), ("@n", "daprod.npc." + npc), ("@o", npc));
-                    Sql("INSERT INTO merchants (id, npc_id, merchant_pack_id) VALUES (@i, @n, @p)", ("@i", nextMerchant++), ("@n", npc), ("@p", pack));
-                }
-                var order = 1000;
-                foreach (var item in MerchantItems)
-                {
-                    if (Scalar($"SELECT COUNT(*) FROM merchant_goods WHERE merchant_pack_id={pack} AND item_id={item} AND grade_id=0") > 0) { order++; continue; }
-                    Sql("INSERT INTO merchant_goods (id, merchant_pack_id, item_id, grade_id, enable, view_order, cost, purchase_type_id, purchase_limit) VALUES (@i, @p, @t, 0, 't', @o, 0, 1, 0)",
-                        ("@i", nextGood++), ("@p", pack), ("@t", item), ("@o", order++));
-                    added++;
-                }
-            }
-            tx.Commit();
-            if (added > 0) notes.Add($"mercanti generici: {added} oggetti aggiunti");
-        }
+        var added = ApplyMerchants(c);
+        if (added > 0) notes.Add($"mercanti generici: {added} oggetti aggiunti");
 
         // ---- istanze multiplayer ----
         var blocked = new List<long>();

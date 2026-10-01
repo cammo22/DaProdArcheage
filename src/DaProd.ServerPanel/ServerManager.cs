@@ -306,6 +306,7 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
 
     void StartWorld()
     {
+        Tweaks.Save(Tweaks.Load()); // il World legge solo ciò che c'è nel file: scrivo anche i valori di default
         var p = Start("game", Path.Combine(WorldDir, "AAEmu.World.exe"), "", WorldDir, new()
         {
             ["DAPROD_TWEAKS"] = Tweaks.FilePath,
@@ -864,6 +865,14 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
     /// <summary>Aggiunge punti onore (honor) a un personaggio, come l'oro: subito se è in gioco, altrimenti nel database.</summary>
     public Task<string> GiveHonorAsync(long charId, long points) => GivePointsAsync("honor", "honor_point", "Punti onore", charId, points);
 
+    /// <summary>Mette un oggetto nella borsa di un personaggio (deve essere in gioco).</summary>
+    public async Task<string> GiveItemAsync(long charId, uint itemId, int count)
+    {
+        if (!IsRunning("game")) return "Server spento: l'oggetto si consegna solo con il personaggio in gioco.";
+        var r = await RunCommandAsync("item", charId, itemId * 1_000_000L + Math.Clamp(count, 1, 999_999));
+        return r == null ? NoAnswer : r == "online" ? "Oggetto consegnato in borsa." : r == "borsa piena" ? "La borsa del personaggio è piena." : r == "oggetto sconosciuto" ? "ID oggetto sconosciuto." : r == "personaggio non collegato" ? "Il personaggio deve essere in gioco." : "Esito: " + r;
+    }
+
     /// <summary>Aggiunge punti vocazione (vocation badges) a un personaggio.</summary>
     public Task<string> GiveVocationAsync(long charId, long points) => GivePointsAsync("vocation", "vocation_point", "Punti vocazione", charId, points);
 
@@ -894,7 +903,17 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
     async Task EnsureShopAsync()
     {
         var n = Convert.ToInt64((await QueryAsync("aaemu_game", "SELECT COUNT(*) FROM ics_skus WHERE shop_id >= 3000000")).Rows[0][0]);
-        if (n == 0 && File.Exists(Path.Combine(SqlDir, "shop-full.sql"))) await ImportShopAsync(false); // shop vuoto o solo quello predefinito
+        var full = Path.Combine(SqlDir, "shop-full.sql");
+        // shop vuoto, solo quello predefinito, oppure un elenco aggiornato (nuovi oggetti con una nuova versione del pannello)
+        var sig = File.Exists(full) ? new FileInfo(full).Length + ":" + File.GetLastWriteTimeUtc(full).Ticks : "";
+        var sigFile = Path.Combine(PanelSettings.DataDir, "shop.sig");
+        var old = File.Exists(sigFile) ? File.ReadAllText(sigFile) : "";
+        if ((n == 0 || sig != old) && sig != "")
+        {
+            await ImportShopAsync(false);
+            Directory.CreateDirectory(PanelSettings.DataDir);
+            File.WriteAllText(sigFile, sig);
+        }
         if (Tweaks.On("shopFree")) await ApplyShopFreeAsync(false);
     }
 

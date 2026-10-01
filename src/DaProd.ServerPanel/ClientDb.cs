@@ -24,7 +24,7 @@ public static class ClientDb
     }
     public static string Output(PanelSettings s) => Path.Combine(s.ClientDir, "game", "db", "daprod.sqlite3");
 
-    const string Version = "4"; // alzare quando cambia cosa mettiamo nel database del client
+    const string Version = "5"; // alzare quando cambia cosa mettiamo nel database del client
     static string SigFile(PanelSettings s) => Path.Combine(PanelSettings.DataDir, "clientdb.sig");
     /// <summary>Solo le regole che finiscono nel database del client: cambiarne altre non deve far riscaricare 230 MB agli amici.</summary>
     static readonly string[] ClientTweaks = ["clientAllPasses", "multiInstances"];
@@ -54,6 +54,8 @@ public static class ClientDb
                 Sql("UPDATE arche_passes SET ed_year=0, ed_month=0, ed_day=0, ed_hour=0, ed_min=0");
                 done.Add("pass");
             }
+            var shops = GameData.ApplyMerchants(c); // le liste dei mercanti le legge il client dal suo database
+            if (shops > 0) done.Add($"mercanti generici ({shops})");
             foreach (var (from, to) in Renames.Load())
             {
                 using var cmd = c.CreateCommand();

@@ -243,6 +243,15 @@ public sealed partial class MainForm
             var v = Ui.Prompt(this, "Quanti punti pass aggiungere?", "1000"); if (!long.TryParse(v, out var pts) || pts <= 0) return;
             MessageBox.Show(await Bg2(() => _srv.GivePassPointsAsync(id, pts)), "Punti pass");
         }, 120));
+        b2.Controls.Add(Ui.Btn("Dai oggetto", Ui.Green, async () =>
+        {
+            if (SelId(_chars, "id") is not { } id) { MessageBox.Show("Seleziona un personaggio."); return; }
+            var v = Ui.Prompt(this, "ID oggetto e quantità (es. \"47852 10\"). Story Quest Infusion rank 1-3: 47852, 47853, 47854.", "47852 1");
+            var parts = (v ?? "").Split([' ', 'x', ',', ';'], StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0 || !uint.TryParse(parts[0], out var item)) return;
+            var qty = parts.Length > 1 && int.TryParse(parts[1], out var q) ? q : 1;
+            MessageBox.Show(await Bg2(() => _srv.GiveItemAsync(id, item, qty)), "Dai oggetto");
+        }, 140));
         b2.Controls.Add(Ui.Btn("Punti onore", Ui.Purple, async () =>
         {
             if (SelId(_chars, "id") is not { } id) { MessageBox.Show("Seleziona un personaggio."); return; }

@@ -532,7 +532,86 @@
  using AAEmu.Game.Models.Game.TodayAssignment;
  using MySql.Data.MySqlClient;
  using NLog;
-@@ -741,6 +742,23 @@
+@@ -32,6 +33,9 @@
+     /// <summary>Free mission re-rolls allowed per calendar day.</summary>
+     private const uint MaxDailyResets = 3;
+ 
++    /// <summary>DaProd: free changes per day (rule "dailyResetsMax", 3 = original).</summary>
++    private static uint ResetLimit => (uint)Math.Clamp(DaProdTweaks.Get("dailyResetsMax", 3), 0, 999);
++
+     /// <summary>SCTodayAssignmentResetCount countType for personal daily schedule.</summary>
+     private const uint PersonalResetCountType = 0x0B;
+ 
+@@ -74,6 +78,9 @@
+             return;
+ 
+         var used = _resetsUsed.GetValueOrDefault(character.Id, 0u);
++        // with more than the original 3 changes the client must keep seeing "0 used" or it greys the button out
++        if (ResetLimit > MaxDailyResets)
++            used = 0;
+         character.SendPacket(new SCTodayAssignmentResetCountPacket(used, PersonalResetCountType));
+     }
+ 
+@@ -124,6 +131,7 @@
+             if (state.Status == TodayAssignmentStatus.Done)
+                 DropSiblingQuests(character, state.GroupId, keepQuestId: state.QuestContextId);
+         }
++        DaProdTodayGoals.TryGrant(character, CountDonePersonal(character.Id));
+     }
+ 
+     public void HandleRequest(Character character, uint realStep, sbyte request)
+@@ -222,12 +230,12 @@
+         var maxDailyResets = isPrivateExpedition
+             ? (uint)Math.Clamp(ExpeditionManager.Instance.GetContentConfig(
+                 "expedition_today_quest_change_count", MaxDailyResets), 0, uint.MaxValue)
+-            : MaxDailyResets;
++            : ResetLimit;
+         var resetCounter = isPrivateExpedition ? _expeditionResetsUsed : _resetsUsed;
+         var used = resetCounter.GetValueOrDefault(character.Id, 0u);
+         // No server-authored paid price is available for these boards. Accept only the advertised
+         // free reset path; never let the client choose an amount to debit.
+-        if (moneyAmount != 0)
++        if (moneyAmount != 0 && ResetLimit <= MaxDailyResets)
+             return;
+         if (used >= maxDailyResets)
+         {
+@@ -519,6 +527,18 @@
+         }
+     }
+ 
++    /// <summary>DaProd: personal-board contracts finished today (the count the goal rewards are based on).</summary>
++    private int CountDonePersonal(uint characterId)
++    {
++        if (!TryGetCharState(characterId, out var byStep))
++            return 0;
++        var n = 0;
++        foreach (var (realStep, st) in byStep)
++            if (st.Status == TodayAssignmentStatus.Done && TodayQuestGameData.Instance.GetStepByRealStep(realStep) is { SortId: 1 })
++                n++;
++        return n;
++    }
++
+     private void CompleteStep(
+         Character character,
+         uint realStep,
+@@ -537,6 +557,7 @@
+ 
+         SendState(character, realStep, state, init: false);
+         DropSiblingQuests(character, state.GroupId, keepQuestId: completedQuestId);
++        DaProdTodayGoals.TryGrant(character, CountDonePersonal(character.Id));
+ 
+         Logger.Info(
+             "TodayAssignment done {0}: realStep={1} group={2} quest={3}",
+@@ -617,7 +638,7 @@
+     /// </summary>
+     private static bool TryConsumeUnlockCost(Character character, TodayQuestStepTemplate step, uint realStep)
+     {
+-        if (step.ItemId == 0 || step.ItemNum <= 0)
++        if (step.ItemId == 0 || step.ItemNum <= 0 || DaProdTweaks.On("dailyFreeUnlock"))
+             return true;
+ 
+         if (!character.Inventory.CheckItems(SlotType.Inventory, step.ItemId, step.ItemNum))
+@@ -741,6 +762,23 @@
          Persist(character.Id, realStep, state);
          SendState(character, realStep, state, init: false);
          SendResetCount(character);
@@ -544,7 +623,7 @@
 +            {
 +                if (character.Quests.ActiveQuests.TryGetValue(primaryQuestId, out var instantQuest))
 +                {
-+                    instantQuest.Step = QuestComponentKind.Reward;
++                    instantQuest.DaProdCompleteObjectives();
 +                    Logger.Info("DAPROD daily instant {0}: quest={1}", character.Name, primaryQuestId);
 +                }
 +            }
@@ -556,6 +635,17 @@
  
          Logger.Info(
              "TodayAssignment accepted {0}: realStep={1} group={2} quest={3}",
+@@ -1259,8 +1297,8 @@
+             }
+ 
+             var used = reader.GetUInt32("resets_used");
+-            if (used > MaxDailyResets)
+-                used = MaxDailyResets;
++            if (used > ResetLimit)
++                used = ResetLimit;
+             _resetsUsed[character.Id] = used;
+         }
+         catch (MySqlException ex) when (ex.Number is 1146 or 1054)
 --- a/AAEmu.Game/Core/Packets/C2G/RandomShopMerchantRange.cs
 +++ b/AAEmu.Game/Core/Packets/C2G/RandomShopMerchantRange.cs
 @@ -31,7 +31,7 @@
@@ -598,9 +688,87 @@
                  "TowerDef {0} skipped Start — no zone with playable spots (spawner={1}) — {2} ({3})",
                  towerDef.Id, towerDef.TargetNpcSpawnId, reason, towerDef.Name);
              return;
+--- a/AAEmu.Game/Models/Game/Quests/NewQuestCode.cs
++++ b/AAEmu.Game/Models/Game/Quests/NewQuestCode.cs
+@@ -82,7 +82,19 @@
+         if (!QuestSteps.TryGetValue(Step, out var questStep))
+             return false;
+ 
++        // DaProd: "dailyInstant" - a daily contract that has reached its Progress step is filled in right away
++        if (Step == QuestComponentKind.Progress && DaProdGameplay.IsAutoDaily(TemplateId) && DaProdTweaks.On("dailyInstant"))
++            DaProdCompleteObjectives(false);
++
+         var res = questStep.RunComponents();
++
++        // DaProd: a daily contract has no NPC to report to ("complete automatically"): objectives done -> straight to the reward
++        var daprodDaily = DaProdGameplay.IsAutoDaily(TemplateId);
++        if (daprodDaily && !res && Step == QuestComponentKind.Progress && GetQuestObjectiveStatus() >= QuestObjectiveStatus.QuestComplete)
++        {
++            res = true;
++            Logger.Info($"DAPROD daily: objectives done, quest {TemplateId} goes on by itself for {Owner.Name}");
++        }
+ 
+         // HackFix: added to account for missing Ready step on Quests that use a Score + LetItBeDone
+         if (
+@@ -100,11 +112,34 @@
+             GoToNextStep();
+         }
+ 
++        if (daprodDaily && Step == QuestComponentKind.Ready)
++        {
++            Logger.Info($"DAPROD daily: quest {TemplateId} turned in automatically for {Owner.Name}");
++            GoToNextStep();
++        } // Ready -> Reward: the next evaluation hands out the rewards and completes the quest
++
+         // Send update to player
+         if (!_skipUpdatePacket)
+             Owner?.SendPacket(new SCQuestContextUpdatedPacket(this, ComponentId));
+ 
+         return res;
++    }
++
++    /// <summary>DaProd: marks every objective of the Progress step as done (daily contracts with the "dailyInstant" rule).</summary>
++    public void DaProdCompleteObjectives(bool requestEvaluation = true)
++    {
++        if (!QuestSteps.TryGetValue(QuestComponentKind.Progress, out var progress))
++            return;
++        foreach (var component in progress.Components.Values)
++            foreach (var act in component.Acts)
++            {
++                var index = act.Template.ThisComponentObjectiveIndex;
++                if (index == 0xFF || index >= Objectives.Length)
++                    continue;
++                Objectives[index] = Math.Max(Objectives[index], act.Template.Count);
++            }
++        if (requestEvaluation)
++            RequestEvaluation();
+     }
+ 
+     /// <summary>
+--- a/AAEmu.Game/GameData/TodayQuestGameData.cs
++++ b/AAEmu.Game/GameData/TodayQuestGameData.cs
+@@ -21,6 +21,7 @@
+         _stepsById = [];
+         _stepsByRealStep = [];
+         _groupsById = [];
++        DaProdTodayGoals.Load(connection);
+ 
+         using (var command = connection.CreateCommand())
+         {
+--- a/AAEmu.Game/Models/Game/Char/CharacterCraft.cs
++++ b/AAEmu.Game/Models/Game/Char/CharacterCraft.cs
+@@ -112,7 +112,7 @@
+         // craft-start ids that no doodad_funcs row uses). Nothing live is refused by it; it keeps the retail
+         // rule in place for whenever that content becomes reachable. A character that was never loaded
+         // (tests, tooling) has no recipe book, and then there is nothing to gate against either.
+-        if (ItemUseGameData.Instance.IsRecipeGatedCraft(craft.Id) &&
++        if (!DaProdTweaks.On("allRecipes") && ItemUseGameData.Instance.IsRecipeGatedCraft(craft.Id) &&
+             Owner.Recipes is { } recipeBook &&
+             !recipeBook.IsLearned(craft.Id))
+         {
 --- /dev/null
 +++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,163 @@
 +using System.Runtime.CompilerServices;
 +using AAEmu.Commons.Utils.DB;
 +using AAEmu.Game.Core.Managers;
@@ -608,6 +776,7 @@
 +using AAEmu.Game.Core.Packets.G2C;
 +using AAEmu.Game.Models.Game.Char;
 +using AAEmu.Game.Models.Game.Items;
++using AAEmu.Game.Models.Game.Items.Actions;
 +using AAEmu.Game.Models.StaticValues;
 +using NLog;
 +
@@ -689,7 +858,7 @@
 +            string result;
 +            try
 +            {
-+                var character = kind is "gold" or "labor" or "passpoints" or "honor" or "vocation" ? WorldManager.Instance.GetCharacterById(charId) : null;
++                var character = kind is "gold" or "labor" or "passpoints" or "honor" or "vocation" or "item" ? WorldManager.Instance.GetCharacterById(charId) : null;
 +                if (kind == "labor")
 +                    result = FillLabor(c, charId, character);
 +                else if (kind == "passpoints")
@@ -699,6 +868,18 @@
 +                {
 +                    CashShopManager.Instance.Load();
 +                    result = "online";
++                }
++                else if (kind == "item")
++                {
++                    // amount = itemId * 1_000_000 + quantity
++                    var itemId = (uint)(amount / 1_000_000);
++                    var qty = (int)(amount % 1_000_000);
++                    if (character == null)
++                        result = "personaggio non collegato";
++                    else if (itemId == 0 || qty <= 0 || ItemManager.Instance.GetTemplate(itemId) == null)
++                        result = "oggetto sconosciuto";
++                    else
++                        result = character.Inventory.Bag.AcquireDefaultItem(ItemTaskType.QuestSupplyItems, itemId, qty) ? "online" : "borsa piena";
 +                }
 +                else if (kind is "honor" or "vocation")
 +                {
@@ -871,7 +1052,7 @@
 +}
 --- /dev/null
 +++ b/AAEmu.Game/DaProdGameplay.cs
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,49 @@
 +using AAEmu.Game.Core.Packets;
 +using AAEmu.Game.Models.Game.Char;
 +using NLog;
@@ -885,6 +1066,20 @@
 +
 +    /// <summary>merchant_random_packs id of the Manastorm (Palos) shop.</summary>
 +    public const uint ManastormPack = 7;
++
++    private static HashSet<uint> _dailyQuests;
++
++    /// <summary>
++    /// Quests of the daily schedule ("Daily Contracts"): the client says they complete by themselves, with no turn-in,
++    /// so the server must push them to the reward as soon as the objectives are met (rule "dailyAuto").
++    /// </summary>
++    public static bool IsAutoDaily(uint questId)
++    {
++        if (!DaProdTweaks.On("dailyAuto"))
++            return false;
++        _dailyQuests ??= [.. GameData.TodayQuestGameData.Instance.AllGroups.SelectMany(g => g.QuestContextIds)];
++        return _dailyQuests.Contains(questId);
++    }
 +
 +    /// <summary>Pack opened by the HUD "random shop" button (no NPC): the Manastorm shop when enabled.</summary>
 +    public static uint DirectRandomShopPack() => DaProdTweaks.On("manastormShop") ? ManastormPack : 0u;
@@ -904,6 +1099,136 @@
 +        catch (Exception ex)
 +        {
 +            Logger.Warn(ex, "DAPROD manastorm shop push failed for {0}", character.Name);
++        }
++    }
++}
+--- /dev/null
++++ b/AAEmu.Game/DaProdTodayGoals.cs
+@@ -0,0 +1,127 @@
++using AAEmu.Commons.Utils.DB;
++using AAEmu.Game.Core.Packets.G2C;
++using AAEmu.Game.Models;
++using AAEmu.Game.Models.Game.Char;
++using AAEmu.Game.Models.Game.Items.Actions;
++using Microsoft.Data.Sqlite;
++using MySql.Data.MySqlClient;
++using NLog;
++
++namespace AAEmu.Game;
++
++/// <summary>
++/// DaProd: the daily schedule reward track (today_quest_goals / today_quest_goal_items). The client shows "complete N contracts, get
++/// item X"; the original server never gave those items. Completed contracts are counted per character and day, and every reward whose
++/// goal has been reached is handed out once (persisted in daprod_today_goal_rewards).
++/// </summary>
++public static class DaProdTodayGoals
++{
++    private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
++
++    private sealed record Goal(uint Id, int Level);
++    private sealed record GoalItem(uint Id, uint GoalId, int Goal, uint ItemId, int Count);
++
++    private static List<Goal> _goals = [];
++    private static List<GoalItem> _items = [];
++    private static bool _tableReady;
++    private static readonly object Sync = new();
++
++    public static void Load(SqliteConnection connection)
++    {
++        var goals = new List<Goal>();
++        var items = new List<GoalItem>();
++        try
++        {
++            using (var c = connection.CreateCommand())
++            {
++                c.CommandText = "SELECT id, level FROM today_quest_goals";
++                using var r = c.ExecuteReader();
++                while (r.Read())
++                    goals.Add(new Goal((uint)r.GetInt64(0), (int)r.GetInt64(1)));
++            }
++
++            using (var c = connection.CreateCommand())
++            {
++                c.CommandText = "SELECT id, today_quest_goal_id, goal, item_id, item_num FROM today_quest_goal_items ORDER BY goal";
++                using var r = c.ExecuteReader();
++                while (r.Read())
++                    items.Add(new GoalItem((uint)r.GetInt64(0), (uint)r.GetInt64(1), (int)r.GetInt64(2), (uint)r.GetInt64(3), (int)r.GetInt64(4)));
++            }
++        }
++        catch (Exception ex)
++        {
++            Logger.Warn(ex, "DAPROD today goals not loaded");
++        }
++
++        _goals = goals;
++        _items = items;
++        Logger.Info("DAPROD today goals: {0} level brackets, {1} rewards", goals.Count, items.Count);
++    }
++
++    private static void EnsureTable(MySqlConnection c)
++    {
++        if (_tableReady)
++            return;
++        using var cmd = c.CreateCommand();
++        cmd.CommandText = "CREATE TABLE IF NOT EXISTS daprod_today_goal_rewards (owner INT UNSIGNED NOT NULL, day DATE NOT NULL, goal_item_id INT UNSIGNED NOT NULL, PRIMARY KEY (owner, day, goal_item_id))";
++        cmd.ExecuteNonQuery();
++        _tableReady = true;
++    }
++
++    /// <summary>Hands out every reward of the character's level bracket whose goal (completed contracts) has been reached today.</summary>
++    public static void TryGrant(Character character, int done)
++    {
++        if (character == null || done <= 0 || _items.Count == 0)
++            return;
++        try
++        {
++            // the bracket whose top level is the first at or above the character's level (levels 1-9 have their own row)
++            var bracket = _goals.Where(g => g.Level >= character.Level).OrderBy(g => g.Level).FirstOrDefault()
++                          ?? _goals.OrderByDescending(g => g.Level).FirstOrDefault();
++            if (bracket == null)
++                return;
++            var due = _items.Where(i => i.GoalId == bracket.Id && i.Goal <= done).ToList();
++            if (due.Count == 0)
++                return;
++
++            lock (Sync)
++            {
++                using var c = MySQL.CreateConnection();
++                EnsureTable(c);
++                var day = ServerCalendar.TodayUtc.Date;
++                var got = new HashSet<uint>();
++                using (var q = c.CreateCommand())
++                {
++                    q.CommandText = "SELECT goal_item_id FROM daprod_today_goal_rewards WHERE owner=@o AND day=@d";
++                    q.Parameters.AddWithValue("@o", character.Id);
++                    q.Parameters.AddWithValue("@d", day);
++                    using var r = q.ExecuteReader();
++                    while (r.Read())
++                        got.Add(r.GetUInt32(0));
++                }
++
++                foreach (var item in due.Where(i => !got.Contains(i.Id)))
++                {
++                    if (!character.Inventory.Bag.AcquireDefaultItem(ItemTaskType.QuestSupplyItems, item.ItemId, item.Count))
++                    {
++                        Logger.Info("DAPROD today goal {0}: bag full, reward {1} postponed for {2}", item.Goal, item.ItemId, character.Name);
++                        continue;
++                    }
++
++                    using var w = c.CreateCommand();
++                    w.CommandText = "INSERT IGNORE INTO daprod_today_goal_rewards (owner, day, goal_item_id) VALUES (@o, @d, @g)";
++                    w.Parameters.AddWithValue("@o", character.Id);
++                    w.Parameters.AddWithValue("@d", day);
++                    w.Parameters.AddWithValue("@g", item.Id);
++                    w.ExecuteNonQuery();
++                    character.SendPacket(new SCTodayAssignmentItemSentPacket(item.Id, false));
++                    Logger.Info("DAPROD today goal reward {0}: {1} x{2} (goal {3}, done {4})", character.Name, item.ItemId, item.Count, item.Goal, done);
++                }
++            }
++        }
++        catch (Exception ex)
++        {
++            Logger.Warn(ex, "DAPROD today goal reward failed for {0}", character.Name);
 +        }
 +    }
 +}

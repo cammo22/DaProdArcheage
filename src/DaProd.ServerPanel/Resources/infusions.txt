@@ -1,0 +1,131 @@
+# id	nome (tutti gli oggetti Infusion del gioco). Generato da tools/geninfusions.py
+8021	Archeum Infusion
+21270	Hulk Infusion
+23719	Mighty Hulk Infusion
+27263	Adventurer's Mighty Hulk Infusion
+28135	Great Hulk Infusion
+45728	Hiram Infusion
+45731	Unidentified Hiram Infusion
+45746	Lesser Hiram Infusion
+45760	Wrapped Lesser Hiram Infusion
+46009	Clear Erenor Infusion
+46012	Vivid Erenor Infusion
+46013	Lucid Erenor Infusion
+46014	Radiant Erenor Infusion
+46015	Resplendent Erenor Infusion
+46021	Wrapped Unidentified Hiram Infusion
+46023	Mysterious Hiram Infusion
+46088	Large Hiram Infusion Crate
+46089	Hiram Infusion Crate
+46173	Infusion Supply Kit
+46185	Sealed Hiram Infusion
+46189	Hiram Infusion
+46429	Erenor Infusion
+46434	Sealed Erenor Infusion
+46435	Sealed Erenor Infusion
+46436	Sealed Erenor Infusion
+46437	Sealed Erenor Infusion
+46438	Sealed Erenor Infusion
+46439	Sealed Erenor Infusion
+46496	Mysterious Hiram Infusion Quest Starter
+46518	Wrapped Daru's Mission: Unidentified Hiram Infusion
+46614	28-Day Mysterious Hiram Infusion
+46620	Wrapped 28-Day Mysterious Hiram Infusion
+47052	Radiant Hiram Infusion
+47073	Pet Accessory Infusion
+47074	Unidentified Pet Accessory Infusion
+47077	Refined Pet Accessory Infusion
+47218	Improved Infusion Supply Kit
+47248	Mysterious Infusion Pouch
+47348	Wrapped Royal Archivist Mission: Mysterious Hiram Infusion (7 days)
+47349	Royal Archivist Mission: Mysterious Hiram Infusion (7 days)
+47442	Mythic Hiram Infusion
+47445	Eternal Hiram Infusion
+47468	Unidentified Eternal Hiram Infusion
+47470	Unidentified Eternal Erenor Infusion
+47471	Unidentified Mythic Hiram Infusion
+47473	Unidentified Mythic Erenor Infusion
+47545	Vivid World Boss Infusion
+47572	Daru's Mission: 28-Day Mysterious Hiram Infusion
+47573	Wrapped 28-Day Radiant Hiram Infusion
+47674	Radiant Infusion Supply Kit
+47852	Story Quest Infusion: Rank 1
+47853	Story Quest Infusion: Rank 2
+47854	Story Quest Infusion: Rank 3
+47931	Wrapped Hiram Infusion
+47932	Lucky Hiram Infusion
+48140	Erenor Weapon Infusion
+48141	Erenor Armor Infusion
+48142	Erenor Accessory Infusion
+48404	Clear World Boss Infusion
+48487	Unidentified Mythic Erenor Infusion
+48488	Mythic Erenor Infusion
+48492	Mythic Erenor Infusion
+48494	Mythic Hiram Infusion
+48507	Unidentified Story Quest Infusion: Rank 1
+48508	Unidentified Story Quest Infusion: Rank 2
+48509	Unidentified Story Quest Infusion: Rank 3
+48519	Unidentified Mythic Hiram Infusion
+48825	Hiram Infusion
+48828	Lesser Hiram Infusion
+48829	Clear Erenor Infusion
+48830	Vivid Erenor Infusion
+48831	Lucid Erenor Infusion
+48832	Radiant Erenor Infusion
+48833	Resplendent Erenor Infusion
+48835	Hiram Infusion
+48836	Erenor Infusion
+48837	Pet Accessory Infusion
+48841	Eternal Hiram Infusion
+48844	Vivid World Boss Infusion
+48845	Story Quest Infusion: Rank 1
+48846	Story Quest Infusion: Rank 2
+48847	Story Quest Infusion: Rank 3
+48848	Lucky Hiram Infusion
+48849	Erenor Weapon Infusion
+48850	Erenor Armor Infusion
+48851	Erenor Accessory Infusion
+48852	Clear World Boss Infusion
+48853	Mythic Erenor Infusion
+48855	Mythic Hiram Infusion
+49030	Unidentified Exalted Hiram Infusion
+49031	Exalted Hiram Infusion
+49223	Radiant World Boss Infusion
+49508	Mysterious Accessory Infusion
+49742	Mythic Hiram Infusion Bundle
+49746	Eternal Hiram Infusion Bundle
+50008	Erenor Infusions
+50009	Erenor Infusions
+50010	Erenor Infusions
+50011	Erenor Infusions
+50012	Erenor Infusions
+50013	Erenor Infusions
+50014	Erenor Infusions
+50015	Erenor Infusions
+50016	Erenor Infusions
+50211	Lucid World Boss Infusion
+50320	Hiram Infusion Crate
+50416	World Boss Infusion
+50504	Homecoming Warrior Infusion Crate
+50507	Unidentified Eternal Hiram Infusion
+50510	Eternal Hiram Infusion
+50727	Divine Hiram Infusion
+51040	Golden Box: Radiant Hiram Infusion
+51101	Eternal Hiram Infusion
+51579	Mysterious Hiram Infusions
+51580	Radiant Hiram Infusions
+51591	Sacred Hiram Infusion
+51592	Brilliant World Boss Infusion
+52487	Tutorial: Unidentified Pecan's Infusion
+52488	Tutorial: Master Blacksmith's Infusion
+52753	Wrapped World Boss Infusion
+53148	Lucky Hiram Infusion
+53806	Unidentified Dimensional Hiram Infusion
+53807	Dimensional Hiram Infusion
+54090	Mythic Hiram Infusion Bundle
+54327	Ancestral World Boss Infusion
+54328	Ancestral Hiram Infusion
+54329	Ancestral Erenor Infusion
+54334	Unidentified Story Quest Infusion
+54335	Story Quest Infusion
+54738	Brilliant Accessory Infusion
