@@ -58,6 +58,9 @@ Il pacchetto dati si crea sul PC dove tutto funziona con **Server > Pacchetto da
 - **Manastorm Shop**: il pulsante "Random Shop" dell'HUD apre il negozio Manastorm/Palos ovunque (regola `manastormShop`).
 - **Daily Contract**: regola `dailyInstant` = la missione giornaliera si completa appena accettata.
 - **Solo dungeon**: arene, campi di battaglia, difese ed eventi sono tolti (regola `multiInstances`); i dungeon si caricano al volo quando servono.
+- **Nomi** (Regole > Nomi): cambia come il gioco chiama città, PNG, oggetti (di serie Marianople = MariaNapoli, Marilolo = Mariuolo). Il database del client parte SEMPRE da quello inglese (`zoneclient\game\db\compact_en.sqlite3`, o `..\langpatch` sul PC di sviluppo): quello coreano non va mai dato ai giocatori.
+- **Launcher**: splash "Ponticheage" (`python tools/makesplash.py`), finestra adattiva (mai più grande dello schermo, in colonna se stretta). `--nosplash` la salta.
+- **Release**: `release.ps1` pubblica il pannello (zip) e `DaProdLauncher-Amici.exe`, il launcher GIÀ CONFIGURATO (indirizzo, NetBird e chiave): la repo deve restare privata.
 - **Gioca**: il pulsante "Gioca (apri il launcher)" del pannello apre il launcher su questo PC.
 - Icone: `python tools/makeicons.py`.
 

@@ -1,4 +1,4 @@
-# Crea una release GitHub: DaProdServer.zip (pannello + server compilati, SENZA gioco/database/MySQL) e DaProdLauncher.exe.
+# Crea una release GitHub: DaProdServer.zip (pannello + server compilati, SENZA gioco/database/MySQL) e DaProdLauncher-Amici.exe (launcher gia' configurato per la connessione).
 # Uso:  .\release.ps1 1.4.0
 # Il pulsante "Aggiornamenti" del pannello scarica DaProdServer.zip dall'ultima release.
 # Il pacchetto dati del gioco (DaProdGameData.7z, ~25 GB) NON va su GitHub: si crea dal pannello ("Pacchetto dati").
@@ -29,5 +29,9 @@ $ErrorActionPreference = "Continue"
 git -C $root add -A
 git -C $root commit -m "Release $Version" | Out-Null
 git -C $root push
-$launcherExe = Join-Path $dist "DaProdLauncher\DaProdLauncher.exe"
-gh release create "v$Version" $zip $launcherExe --repo cammo22/DaProdArcheage --title "DaProd ArcheAge $Version" --generate-notes
+# il launcher per i giocatori e' QUELLO GIA' CONFIGURATO (indirizzo + rete privata + chiave): lo rifa il pannello senza finestra
+Start-Process "$srv\DaProdServer.exe" -ArgumentList "--build-friend" -Wait
+$res = Get-Content (Join-Path $srv "launcher\friend-build.txt") -Raw
+if ($res -like "ERRORE*") { throw "Launcher per gli amici non creato: $res" }
+$friend = Join-Path $srv "launcher\DaProdLauncher-Amici.exe"
+gh release create "v$Version" $zip $friend --repo cammo22/DaProdArcheage --title "DaProd ArcheAge $Version" --generate-notes

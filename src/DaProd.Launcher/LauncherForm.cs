@@ -21,7 +21,7 @@ public sealed class LauncherForm : Form
     static readonly CultureInfo It = new("it-IT");
 
     // interfaccia
-    readonly Label _title = new() { AutoSize = true, Font = Theme.Title, ForeColor = Theme.Gold, Text = "DaProd ArcheAge" };
+    readonly Label _title = new() { AutoSize = true, Font = Theme.Title, ForeColor = Theme.Gold, Text = "Ponticheage" };
     readonly Label _subtitle = new() { AutoSize = true, Font = Theme.Small, ForeColor = Theme.Muted };
     readonly Chip _cStatus = new() { Width = 150 }, _cPlayers = new() { Width = 130 }, _cZones = new() { Width = 110 }, _cPing = new() { Width = 90 };
     readonly Label _news = new() { Dock = DockStyle.Fill, ForeColor = Theme.Text, Font = Theme.Normal, Padding = new Padding(16, 6, 16, 6), BackColor = Theme.Card };
@@ -34,10 +34,15 @@ public sealed class LauncherForm : Form
     readonly Label _gameInfo = new() { AutoSize = true, Font = Theme.Small, ForeColor = Theme.Muted };
     readonly SlimBar _bar = new() { Dock = DockStyle.Top, Height = 8, Maximum = 1000 };
     readonly Label _status = new() { Dock = DockStyle.Fill, ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft, Font = Theme.Small };
-    readonly Label _speed = new() { Dock = DockStyle.Right, Width = 380, ForeColor = Theme.Gold, TextAlign = ContentAlignment.MiddleRight, Font = Theme.Small };
+    readonly Label _speed = new() { Dock = DockStyle.Right, AutoSize = true, ForeColor = Theme.Gold, TextAlign = ContentAlignment.MiddleRight, Font = Theme.Small };
     readonly Panel _dxBanner = new() { Dock = DockStyle.Top, Height = 0, BackColor = Color.FromArgb(120, 70, 20), Visible = false };
     readonly RoundButton _selfUpdate = new() { Fill = Theme.Orange, Text = "Aggiorna launcher", Width = 150, Height = 30, Visible = false, Font = Theme.Small };
     readonly LinkLabel _cancel = new() { Text = "Annulla download", AutoSize = true, LinkColor = Theme.Red, Font = Theme.Small, Visible = false };
+    // disposizione adattiva: a destra l'accesso e a sinistra le notizie; con la finestra stretta tutto in colonna e scorrevole
+    readonly Panel _body = new() { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(28, 6, 28, 6) };
+    readonly TableLayoutPanel _grid = new() { Dock = DockStyle.Fill, BackColor = Theme.Bg, Margin = Padding.Empty };
+    Control? _left, _loginCard;
+    bool _narrow, _laidOut;
     long _lastDone; DateTime _lastTick = DateTime.Now; double _speedEma;
 
     static TextBox Field(bool pwd = false) => new() { BackColor = Theme.Field, ForeColor = Theme.Text, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 11), UseSystemPasswordChar = pwd, Dock = DockStyle.Top };
@@ -45,19 +50,19 @@ public sealed class LauncherForm : Form
     public LauncherForm()
     {
         _updater = new GameUpdater(() => _dl, Api, _s.GameDir);
-        Text = "DaProd ArcheAge Launcher";
+        Text = "Ponticheage Launcher";
         try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch { }
         AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(940, 620); MinimumSize = new Size(940, 620);
+        ClientSize = new Size(940, 620); MinimumSize = new Size(600, 440);
         StartPosition = FormStartPosition.CenterScreen; BackColor = Theme.Bg; ForeColor = Theme.Text; Font = Theme.Normal; DoubleBuffered = true;
 
         // ---- intestazione
         var header = new Panel { Dock = DockStyle.Top, Height = 86, Padding = new Padding(28, 14, 28, 0) };
-        var titles = new FlowLayoutPanel { Dock = DockStyle.Left, Width = 420, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        var titles = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         titles.Controls.AddRange([_title, _subtitle]);
-        var chips = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 520, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 18, 0, 0), WrapContents = false };
+        var chips = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 18, 0, 0), WrapContents = false };
         chips.Controls.AddRange([_cPing, _cZones, _cPlayers, _cStatus]);
-        header.Controls.Add(chips); header.Controls.Add(titles);
+        header.Controls.Add(titles); header.Controls.Add(chips);
 
         // ---- banner DirectX
         var dxText = new Label { Text = "Manca DirectX 9: senza, il gioco non parte (errore CryRenderD3D9.dll).", Dock = DockStyle.Fill, ForeColor = Color.White, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(28, 0, 0, 0) };
@@ -83,7 +88,7 @@ public sealed class LauncherForm : Form
         left.Controls.Add(newsCard); left.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = 14 }); left.Controls.Add(evCard);
 
         // ---- colonna destra: accesso
-        var login = new Card { Dock = DockStyle.Right, Width = 316, Padding = new Padding(22, 18, 22, 14) };
+        var login = new Card { Dock = DockStyle.Fill, Padding = new Padding(22, 18, 22, 14), Margin = new Padding(16, 0, 0, 0) };
         var lf = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Theme.Card };
         Control Lbl(string t) => new Label { Text = t, AutoSize = true, ForeColor = Theme.Muted, Font = Theme.Small, BackColor = Theme.Card, Margin = new Padding(0, 8, 0, 2) };
         _user.Dock = _pass.Dock = _pass2.Dock = DockStyle.None; _user.Width = _pass.Width = _pass2.Width = 268;
@@ -102,11 +107,13 @@ public sealed class LauncherForm : Form
         _pass.KeyDown += async (_, e) => { if (e.KeyCode == Keys.Enter && !_register) { e.SuppressKeyPress = true; await Run(PlayAsync); } };
         _cancel.Click += (_, _) => _cts?.Cancel();
 
-        var body = new Panel { Dock = DockStyle.Fill, Padding = new Padding(28, 6, 28, 6) };
-        body.Controls.Add(left); body.Controls.Add(new Panel { Dock = DockStyle.Right, Width = 16 }); body.Controls.Add(login);
+        _left = left; _loginCard = login;
+        left.Margin = Padding.Empty;
+        _body.AutoScroll = false; _body.HorizontalScroll.Enabled = false; _body.HorizontalScroll.Visible = false; _body.HorizontalScroll.Maximum = 0; _body.AutoScroll = true;
+        _body.Controls.Add(_grid);
 
         // ---- link in basso a destra
-        var links = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 26, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 0, 28, 0) };
+        var links = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 0, 28, 0), WrapContents = true };
         LinkLabel Link(string t, Action a) { var l = new LinkLabel { Text = t, AutoSize = true, LinkColor = Theme.Muted, ActiveLinkColor = Color.White, Font = Theme.Small, Margin = new Padding(14, 2, 0, 0) }; l.Click += (_, _) => a(); return l; }
         links.Controls.Add(Link("Cambia server", ChangeServer));
         links.Controls.Add(Link("Apri cartella di gioco", () => { Directory.CreateDirectory(_s.GameDir); Process.Start("explorer.exe", _s.GameDir); }));
@@ -114,20 +121,67 @@ public sealed class LauncherForm : Form
         links.Controls.Add(_selfUpdate);
         _selfUpdate.Click += async (_, _) => await Run(SelfUpdate);
 
-        Controls.Add(body); Controls.Add(links); Controls.Add(_dxBanner); Controls.Add(header); Controls.Add(footer);
+        Controls.Add(_body); Controls.Add(links); Controls.Add(_dxBanner); Controls.Add(header); Controls.Add(footer);
 
         ApplyMode(passLbl2);
         UpdateChips();
-        Shown += async (_, _) => { _user.SelectionStart = _user.TextLength; _user.SelectionLength = 0; await Run(Connect); };
+        Relayout();
+        SizeChanged += (_, _) => Relayout();
+        Shown += async (_, _) => { FitToScreen(); Relayout(); _user.SelectionStart = _user.TextLength; _user.SelectionLength = 0; if (!Program.TestMode) await Run(Connect); };
         FormClosed += (_, _) => _tunnel?.Dispose();
         var t = new System.Windows.Forms.Timer { Interval = 500 };
         t.Tick += async (_, _) => await OnTick();
         t.Start();
     }
 
+    /// <summary>La finestra non deve mai essere più grande dello schermo (con la scala di Windows al 150% lo era): i pulsanti restano sempre raggiungibili.</summary>
+    void FitToScreen()
+    {
+        var wa = Screen.FromControl(this).WorkingArea;
+        MinimumSize = new Size(Math.Min(MinimumSize.Width, wa.Width - 20), Math.Min(MinimumSize.Height, wa.Height - 20));
+        var w = Math.Min(Width, wa.Width - 20); var h = Math.Min(Height, wa.Height - 20);
+        if (w != Width || h != Height) { Size = new Size(w, h); Location = new Point(wa.Left + (wa.Width - w) / 2, wa.Top + (wa.Height - h) / 2); }
+    }
+
+    /// <summary>Largo: notizie a sinistra e accesso a destra. Stretto: accesso sopra e notizie sotto, con barra di scorrimento.</summary>
+    void Relayout()
+    {
+        if (_left == null || _loginCard == null) return;
+        var narrow = ClientSize.Width < LogicalToDeviceUnits(780);
+        var loginH = LogicalToDeviceUnits(_register ? 470 : 400);
+        var fw = Math.Clamp(narrow ? ClientSize.Width - LogicalToDeviceUnits(100) : LogicalToDeviceUnits(268), LogicalToDeviceUnits(200), LogicalToDeviceUnits(420));
+        _user.Width = _pass.Width = _pass2.Width = _play.Width = _msg.Width = fw;
+        _cPing.Visible = _cZones.Visible = !narrow;
+        _body.AutoScrollMinSize = new Size(0, narrow ? loginH + LogicalToDeviceUnits(380) : loginH);
+        if (_laidOut && narrow == _narrow) return;
+        _laidOut = true; _narrow = narrow;
+        _grid.SuspendLayout();
+        _grid.Controls.Clear(); _grid.ColumnStyles.Clear(); _grid.RowStyles.Clear();
+        if (!narrow)
+        {
+            _grid.ColumnCount = 2; _grid.RowCount = 1;
+            _grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            _grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, LogicalToDeviceUnits(316 + 16)));
+            _grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _loginCard.Margin = new Padding(LogicalToDeviceUnits(16), 0, 0, 0);
+            _grid.Controls.Add(_left, 0, 0); _grid.Controls.Add(_loginCard, 1, 0);
+        }
+        else
+        {
+            _grid.ColumnCount = 1; _grid.RowCount = 2;
+            _grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            _grid.RowStyles.Add(new RowStyle(SizeType.Absolute, loginH));
+            _grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _loginCard.Margin = new Padding(0, 0, 0, LogicalToDeviceUnits(12));
+            _grid.Controls.Add(_loginCard, 0, 0); _grid.Controls.Add(_left, 0, 1);
+        }
+        _grid.ResumeLayout(true);
+    }
+
     string Api(string path) => _s.ServerUrl.TrimEnd('/') + path;
     void SetStatus(string t) { if (_status.Text != t) _status.Text = t; }
-    void Msg(string t, bool error = false) { _msg.Text = t; _msg.ForeColor = error ? Theme.Red : Theme.Muted; }
+    void Msg(string t, bool error = false) { if (_msg.Text != t) _msg.Text = t; var c = error ? Theme.Red : Theme.Muted; if (_msg.ForeColor != c) _msg.ForeColor = c; }
+    static void SetText(Label l, string t) { if (l.Text != t) l.Text = t; }
 
     async Task Run(Func<Task> f)
     {
@@ -141,6 +195,7 @@ public sealed class LauncherForm : Form
     void ApplyMode(Control passLbl2)
     {
         _pass2.Visible = passLbl2.Visible = _register;
+        Relayout();
         _switch.Text = _register ? "Ho già un account" : "Crea un nuovo account";
         _msg.Text = "";
         UpdatePlayButton();
@@ -190,12 +245,11 @@ public sealed class LauncherForm : Form
             _pingMs = (int)sw.ElapsedMilliseconds;
             var wasDown = _info == null;
             _info = info;
-            _title.Text = info!.name;
-            _subtitle.Text = $"v{MyVersion}  -  {new Uri(_s.ServerUrl).Host}";
+            SetText(_subtitle, $"{info!.name}  -  v{MyVersion}");
             _ready = !info.maintenance && info.live?.ready == true;
-            _news.Text = info.maintenance ? (info.maintenanceMessage ?? "Manutenzione in corso.") + "\n\n" + info.news
-                : !_ready ? "Il server si sta avviando: riprovo in automatico.\n" + (info.live?.status ?? "") + "\n\n" + info.news : info.news;
-            _events.Text = info.events is { Count: > 0 } ev ? string.Join("\n", ev.Select(e => $"•  {e.name}   -   {Rel(DateTime.Parse(e.at))}")) : "Nessun evento in programma.";
+            SetText(_news, info.maintenance ? (info.maintenanceMessage ?? "Manutenzione in corso.") + "\n\n" + info.news
+                : !_ready ? "Il server si sta avviando: riprovo in automatico.\n" + (info.live?.status ?? "") + "\n\n" + info.news : info.news);
+            SetText(_events, info.events is { Count: > 0 } ev ? string.Join("\n", ev.Select(e => $"•  {e.name}   -   {Rel(DateTime.Parse(e.at))}")) : "Nessun evento in programma.");
             _selfUpdate.Visible = Version.TryParse(info.launcherVersion, out var v) && v > MyVersion;
             if (wasDown && !_firstConnect && !_busy) await CheckPatch();
         }

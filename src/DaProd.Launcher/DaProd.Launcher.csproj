@@ -4,7 +4,7 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
-    <Version>1.6.0</Version>
+    <Version>1.7.0</Version>
     <ApplicationIcon>Assets\launcher.ico</ApplicationIcon>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>DaProdLauncher</AssemblyName>
@@ -14,6 +14,9 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\splash.png" LogicalName="splash.png" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
   </ItemGroup>

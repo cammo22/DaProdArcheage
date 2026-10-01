@@ -28,8 +28,14 @@ public sealed partial class MainForm : Form
     static readonly string LogPath = Path.Combine(ServerManager.ServerDir, "logs", "panel.log");
     static readonly Regex Noise = new("GameData|RandomMerchant|Sailing activity|Reopen box|UccGameData|SkillManager|CollectionGameData", RegexOptions.Compiled);
     static readonly Regex KeepWorld = new(@"\[(WARN|ERROR|FATAL)\]|ZoneLoaded|Zone lost|Zone disconnect|DAPROD_ZONE|listening|Registered|Successfully|refused|Returning|Character|Loaded \d+ crafts", RegexOptions.Compiled);
+    /// <summary>Righe del gioco che si ripetono migliaia di volte e non servono a nessuno.</summary>
+    static readonly Regex Spam = new(@"StartSkill rejected|TowerDef\w* \d+ skipped|ForUnit: no ZoneLoaded|Rejected Zone movement|Ignoring dye color|MirrorZoneNpcSpawn|ChangeOtherDoodadPhase|flush skipped|EnterZone refused|Zone handoff refused|RelayMoveToZone|Skipping merchant good|tower_defs\.id|GameServer from .* (dis)?connected|SC relayed|ZWUnitMovements|ZWSpawnNpc|WZNpcState|Mirrored zone NPC|No zone host for zone|OnSpawn skill FX|already owned zone|Not relaying buff|ConflictZoneSpawnerRelay", RegexOptions.Compiled);
+    /// <summary>Dei processi delle zone e di MySQL interessano solo errori e avvii.</summary>
+    static readonly Regex KeepZone = new(@"error|exception|fail|crash|Avviato|Fermat|ZoneLoaded|ARRESTO", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    static readonly Regex Digits = new(@"\d+", RegexOptions.Compiled);
     readonly object _rl = new();
     long _rlWindow; int _rlCount, _rlDropped;
+    readonly Dictionary<string, (long At, int Hidden)> _seen = new();
 
     volatile HealthReport? _last;
     bool _checking, _closing;
@@ -128,10 +134,19 @@ public sealed partial class MainForm : Form
     {
         _health?.OnLog(line);
         if (Noise.IsMatch(line)) return;
-        if (src == "game" && !KeepWorld.IsMatch(line)) return;
+        if (src == "game" && (Spam.IsMatch(line) || !KeepWorld.IsMatch(line))) return;
+        if (src.StartsWith("zone:") && !KeepZone.IsMatch(line)) return;
+        if (src == "mysql" && !line.Contains("[ERROR]") && !line.Contains("[Warning]") && !line.Contains("ready for connections")) return;
+        if (src == "login" && !line.Contains("[WARN]") && !line.Contains("[ERROR]") && !line.Contains("GameController")) return;
         lock (_rl)
         {
             var now = Environment.TickCount64;
+            // righe uguali (a parte i numeri) entro un minuto: se ne mostra una sola e poi si dice quante erano
+            var key = src + Digits.Replace(line.Length > 160 ? line[..160] : line, "#");
+            if (_seen.TryGetValue(key, out var prev) && now - prev.At < 60_000) { _seen[key] = (prev.At, prev.Hidden + 1); return; }
+            if (_seen.Count > 2000) _seen.Clear();
+            _seen[key] = (now, 0);
+            if (prev.Hidden > 0) _logQ.Enqueue($"[{DateTime.Now:HH:mm:ss}] [{src}] (la riga qui sotto si era ripetuta altre {prev.Hidden} volte)");
             if (now - _rlWindow > 1000)
             {
                 if (_rlDropped > 0) _logQ.Enqueue($"[{DateTime.Now:HH:mm:ss}] [panel] ({_rlDropped} righe omesse: troppo rapide)");
@@ -228,8 +243,16 @@ public sealed partial class MainForm : Form
 static class Program
 {
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        // senza finestra: rifà il launcher degli amici (già configurato con indirizzo e chiave) e scrive l'esito in launcherriend-build.txt
+        if (args.Contains("--build-friend"))
+        {
+            string res;
+            try { res = FriendLauncher.EnsureBuilt(PanelSettings.Load()); } catch (Exception ex) { res = "ERRORE: " + ex.Message; }
+            File.WriteAllText(Path.Combine(PanelSettings.Root, "launcher", "friend-build.txt"), res);
+            return;
+        }
         using var mutex = new Mutex(true, "DaProdServerPanel", out var first);
         if (!first) { MessageBox.Show("Il pannello DaProd è già aperto.", "DaProd"); return; }
         ApplicationConfiguration.Initialize();

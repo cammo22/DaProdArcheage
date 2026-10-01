@@ -8,7 +8,8 @@ public sealed partial class MainForm
         var tabs = new TabControl { Dock = DockStyle.Fill, Font = Ui.Normal };
         var t1 = new TabPage("Regole live") { BackColor = Ui.Bg };
         var t2 = new TabPage("Configurazione avanzata") { BackColor = Ui.Bg };
-        tabs.TabPages.AddRange([t1, t2]);
+        var t3 = new TabPage("Nomi") { BackColor = Ui.Bg };
+        tabs.TabPages.AddRange([t1, t2, t3]);
 
         // ---------- regole live: cambiano subito, senza riavviare ----------
         var values = Tweaks.Load();
@@ -85,6 +86,26 @@ public sealed partial class MainForm
         t2.Controls.Add(ga); t2.Controls.Add(Ui.Gap()); t2.Controls.Add(bar); t2.Controls.Add(filter);
         t2.Controls.Add(Ui.Hint("Tutte le opzioni del gioco (funzioni attive/spente come siege, premium, ingamecashshop, regole del mondo...). In arancione le voci modificate. " +
                                 "Attenzione: un valore sbagliato può impedire l'avvio; \"Ripristina tutto\" torna all'originale.", 56));
+
+        // ---------- nomi: cambia come il gioco chiama città, PNG, oggetti... ----------
+        var gn = Ui.Grid(); gn.ReadOnly = false; gn.AllowUserToAddRows = true;
+        gn.Columns.Add("Originale", "Nome originale"); gn.Columns.Add("Nuovo", "Nuovo nome");
+        foreach (var (a, b) in Renames.Load()) gn.Rows.Add(a, b);
+        var nb = Ui.Bar();
+        nb.Controls.Add(Ui.Btn("Salva e applica", Ui.Orange, async () =>
+        {
+            var list = new List<(string, string)>();
+            foreach (DataGridViewRow r in gn.Rows)
+            {
+                var a = ((string?)r.Cells[0].Value ?? "").Trim(); var b = ((string?)r.Cells[1].Value ?? "").Trim();
+                if (a.Length > 0 && b.Length > 0 && a != b) list.Add((a, b));
+            }
+            Renames.Save(list);
+            MessageBox.Show(await Bg2(() => Task.Run(() => { var r = ClientDb.Build(_s); _api.ResetManifest(); return r; })), "Nomi");
+        }, 200));
+        t3.Controls.Add(gn); t3.Controls.Add(Ui.Gap()); t3.Controls.Add(nb);
+        t3.Controls.Add(Ui.Hint("Scrivi il nome com'è adesso nel gioco (es. Marianople) e quello nuovo (es. MariaNapoli): vale per tutti i testi inglesi che lo contengono " +
+                                "(zone, PNG, missioni). I giocatori lo ricevono al prossimo avvio del launcher (scarica il database del client).", 56));
 
         var p = Ui.Buffered(new Panel { Dock = DockStyle.Fill });
         p.Controls.Add(tabs); p.Controls.Add(Ui.Gap());
