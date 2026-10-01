@@ -11,7 +11,7 @@ public sealed class LauncherForm : Form
     readonly LauncherSettings _s = LauncherSettings.Load();
     HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
     HttpClient _dl = new() { Timeout = Timeout.InfiniteTimeSpan };
-    readonly GameUpdater _updater;
+    GameUpdater _updater;
     VpnTunnel? _tunnel;
     ServerInfo? _info;
     GameUpdater.Plan? _plan;
@@ -117,6 +117,8 @@ public sealed class LauncherForm : Form
         LinkLabel Link(string t, Action a) { var l = new LinkLabel { Text = t, AutoSize = true, LinkColor = Theme.Muted, ActiveLinkColor = Color.White, Font = Theme.Small, Margin = new Padding(14, 2, 0, 0) }; l.Click += (_, _) => a(); return l; }
         links.Controls.Add(Link("Cambia server", ChangeServer));
         links.Controls.Add(Link("Apri cartella di gioco", () => { Directory.CreateDirectory(_s.GameDir); Process.Start("explorer.exe", _s.GameDir); }));
+        links.Controls.Add(Link("Cerca aggiornamenti", async () => await Run(UpdateAllAsync)));
+        links.Controls.Add(Link("Indica archeage.exe", PickGameExe));
         links.Controls.Add(Link("Ripara file", async () => await Run(RepairAsync)));
         links.Controls.Add(_selfUpdate);
         _selfUpdate.Click += async (_, _) => await Run(SelfUpdate);
@@ -306,6 +308,35 @@ public sealed class LauncherForm : Form
         catch (OperationCanceledException) { SetStatus("Download annullato: riprenderà da dove era."); throw new Exception("Download annullato."); }
         finally { _downloading = false; _cancel.Visible = false; _bar.Value = 0; _speed.Text = ""; }
         _gameInfo.Text = "Gioco aggiornato."; _gameInfo.ForeColor = Theme.Green;
+    }
+
+    /// <summary>Per chi ha già il gioco scaricato: si indica dove sta archeage.exe e il launcher usa quella cartella (e la aggiorna).</summary>
+    void PickGameExe()
+    {
+        using var f = new OpenFileDialog { Title = "Indica archeage.exe (di solito nella cartella Bin64)", Filter = "archeage.exe|archeage.exe", CheckFileExists = true };
+        if (f.ShowDialog(this) != DialogResult.OK) return;
+        var dir = Path.GetDirectoryName(f.FileName)!;
+        var name = Path.GetFileName(dir);
+        // il gioco è la cartella che contiene Bin64 (e game_pak): archeage.exe sta dentro Bin64 o bin32
+        var root = name.Equals("Bin64", StringComparison.OrdinalIgnoreCase) || name.Equals("bin32", StringComparison.OrdinalIgnoreCase) ? Path.GetDirectoryName(dir)! : dir;
+        _s.GameDir = root; _s.Save();
+        _updater = new GameUpdater(() => _dl, Api, _s.GameDir);
+        Msg("Cartella del gioco: " + root);
+        _ = Run(CheckPatch);
+    }
+
+    /// <summary>Un solo tasto: nuovo launcher (si riavvia da solo) e file del gioco/database, che il server pubblica e aggiorna.</summary>
+    async Task UpdateAllAsync()
+    {
+        SetStatus("Cerco aggiornamenti...");
+        await RefreshInfo();
+        if (_info == null) { Msg("Server non raggiungibile: riprova tra poco.", true); return; }
+        if (_selfUpdate.Visible) { await SelfUpdate(); return; }
+        var plan = await _updater.CheckAsync();
+        _plan = plan;
+        if (plan.Todo.Count == 0) { SetStatus("Tutto aggiornato."); _gameInfo.Text = "Gioco aggiornato."; _gameInfo.ForeColor = Theme.Green; return; }
+        await Download(plan);
+        SetStatus("Aggiornamento completato.");
     }
 
     async Task RepairAsync()

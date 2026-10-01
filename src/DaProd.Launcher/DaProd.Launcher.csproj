@@ -4,7 +4,7 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
-    <Version>1.9.0</Version>
+    <Version>1.9.1</Version>
     <ApplicationIcon>Assets\launcher.ico</ApplicationIcon>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>DaProdLauncher</AssemblyName>
