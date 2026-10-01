@@ -324,8 +324,9 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
         if (killed > 0) log("panel", $"Chiusi {killed} processi rimasti aperti da una sessione precedente.");
         await FirstSetupAsync();
         try { await EnsureShopAsync(); } catch (Exception ex) { log("panel", "Shop: " + ex.Message); }
+        if (!IsRunning("game")) { try { await Task.Run(() => GameData.Apply(m => log("panel", "Dati di gioco: " + m))); } catch (Exception ex) { log("panel", "Dati di gioco: " + ex.Message); } }
         await PrepareZoneClientAsync();
-        _ = Task.Run(() => { try { if (!File.Exists(ClientDb.Output(s)) && File.Exists(ClientDb.Source)) log("panel", ClientDb.Build(s)); } catch (Exception ex) { log("panel", "Dati client: " + ex.Message); } });
+        _ = Task.Run(() => { try { if (ClientDb.NeedsBuild(s)) log("panel", ClientDb.Build(s)); } catch (Exception ex) { log("panel", "Dati client: " + ex.Message); } });
         WriteConfigs();
         RegisterZones();
         if (!IsRunning("login")) StartLogin();
@@ -498,8 +499,23 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
         List<ZoneInfo> toStart = [];
         lock (_lock)
         {
-            var z = _zones.Values.FirstOrDefault(x => x.ZoneId == zoneId && x.Instance == inst) ?? _zones.Values.FirstOrDefault(x => x.ZoneId == zoneId);
-            if (z == null) return;
+            var z = _zones.Values.FirstOrDefault(x => x.ZoneId == zoneId && x.Instance == inst);
+            if (z == null && (inst == 0 || ZoneCatalog.NameOf(zoneId) is not { } nm || !nm.StartsWith("instance_", StringComparison.OrdinalIgnoreCase)))
+                z = _zones.Values.FirstOrDefault(x => x.ZoneId == zoneId);
+            if (z == null)
+            {
+                // zona non registrata (tipicamente un dungeon): la creo al volo, tranne le istanze multiplayer se sono spente
+                var name = ZoneCatalog.NameOf(zoneId);
+                if (name == null) return;
+                if (GameData.IsMultiplayerInstance(name) && !Tweaks.On("multiInstances"))
+                {
+                    log("zone", $"Istanza multiplayer {name} disattivata (Regole > Istanze): non la carico.");
+                    return;
+                }
+                z = new ZoneInfo { Name = name, Instance = inst, ZoneId = zoneId, Port = Math.Max(60099, _zones.Values.Select(x => x.Port).DefaultIfEmpty(60099).Max()) + 1, Group = ZoneCatalog.GroupOf(name) };
+                _zones[z.Key] = z;
+                log("zone", $"Nuova zona al volo: {z.Key}.");
+            }
             // prima la zona richiesta, poi la sua regione, poi le regioni confinanti (il giocatore ci può camminare dentro)
             var near = z.Group > 0 ? ZoneCatalog.NeighboursOf(z.Group) : [];
             foreach (var x in _zones.Values
@@ -843,6 +859,23 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
         }
         var r = await RunCommandAsync("labor", charId, 0);
         return r == null ? NoAnswer : r == "online" ? "Labor riempito al massimo in gioco." : r == "offline" ? "Personaggio non collegato: labor dell'account riempito, lo vedrai all'accesso." : "Esito: " + r;
+    }
+
+    /// <summary>Aggiunge punti onore (honor) a un personaggio, come l'oro: subito se è in gioco, altrimenti nel database.</summary>
+    public Task<string> GiveHonorAsync(long charId, long points) => GivePointsAsync("honor", "honor_point", "Punti onore", charId, points);
+
+    /// <summary>Aggiunge punti vocazione (vocation badges) a un personaggio.</summary>
+    public Task<string> GiveVocationAsync(long charId, long points) => GivePointsAsync("vocation", "vocation_point", "Punti vocazione", charId, points);
+
+    async Task<string> GivePointsAsync(string kind, string column, string label, long charId, long points)
+    {
+        if (!IsRunning("game"))
+        {
+            var n = await ExecAsync("aaemu_game", $"UPDATE characters SET {column}=GREATEST(0, {column}+@a) WHERE id=@i", ("@a", points), ("@i", charId));
+            return n > 0 ? $"Server spento: {label.ToLower()} aggiunti nel database, li vedrai al prossimo accesso." : "Personaggio non trovato.";
+        }
+        var r = await RunCommandAsync(kind, charId, points);
+        return r == null ? NoAnswer : r == "online" ? $"{label} consegnati in gioco." : r == "offline" ? $"Personaggio non collegato: {label.ToLower()} aggiunti, li vedrai all'accesso." : "Esito: " + r;
     }
 
     /// <summary>Aggiunge punti al pass in corso del personaggio (deve essere in gioco).</summary>

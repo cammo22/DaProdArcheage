@@ -31,7 +31,7 @@ add([8, 51, 21, 55, 56, 45, 46, 47, 48, 49], (3, 1), (3, 4))                    
 add([7], (3, 1), (3, 5))                           # mobili
 
 # oggetti sempre presenti (biglietti pass)
-TICKETS = [48543, 47617, 50633, 50634, 52145, 54232]
+TICKETS = [48543, 47617, 50633, 50634, 52145, 54232, 45508, 47852, 47853, 47854, 48845, 48846, 48847, 54335]  # biglietti pass, cristalli Manastorm, Story Quest Infusion
 
 s = sqlite3.connect(DATA)
 l = sqlite3.connect(LANG)

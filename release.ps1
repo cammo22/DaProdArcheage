@@ -29,4 +29,5 @@ $ErrorActionPreference = "Continue"
 git -C $root add -A
 git -C $root commit -m "Release $Version" | Out-Null
 git -C $root push
-gh release create "v$Version" $zip --repo cammo22/DaProdArcheage --title "DaProd ArcheAge $Version" --generate-notes
+$launcherExe = Join-Path $dist "DaProdLauncher\DaProdLauncher.exe"
+gh release create "v$Version" $zip $launcherExe --repo cammo22/DaProdArcheage --title "DaProd ArcheAge $Version" --generate-notes

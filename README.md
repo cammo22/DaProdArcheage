@@ -53,6 +53,12 @@ Il pacchetto dati si crea sul PC dove tutto funziona con **Server > Pacchetto da
 - **Shop**: al primo avvio si carica lo shop completo (circa 25.000 oggetti divisi per scheda, biglietti ArchePass compresi). Si rigenera con `python tools/genshop.py`.
 - **Giocatori > Personaggi**: oro, labor al massimo, punti pass e livello. Oro, labor e punti pass funzionano in tempo reale con il personaggio in gioco.
 - **Dati del client**: il pannello crea `gioco\game\db\daprod.sqlite3` (database personalizzato) e il launcher lo carica con `+db_location`: si distribuisce con i normali aggiornamenti, senza toccare `game_pak`.
+- **Giocatori > Personaggi**: anche punti onore e punti vocazione (come l'oro, in tempo reale).
+- **Mercanti generici**: vendono Story Quest Infusion (rank 1-3) e Manastorm Crystal gratis. I dati si ritoccano a ogni avvio (`GameData.cs`).
+- **Manastorm Shop**: il pulsante "Random Shop" dell'HUD apre il negozio Manastorm/Palos ovunque (regola `manastormShop`).
+- **Daily Contract**: regola `dailyInstant` = la missione giornaliera si completa appena accettata.
+- **Solo dungeon**: arene, campi di battaglia, difese ed eventi sono tolti (regola `multiInstances`); i dungeon si caricano al volo quando servono.
+- **Gioca**: il pulsante "Gioca (apri il launcher)" del pannello apre il launcher su questo PC.
 - Icone: `python tools/makeicons.py`.
 
 ## Aggiornamenti

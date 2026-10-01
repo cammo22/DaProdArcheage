@@ -233,6 +233,14 @@
          Connection.ActiveChar.IsOnline = true;
  
          // First packet the reference pushes once the context reaches INGAME — enables the client's gameplay
+@@ -139,6 +170,7 @@
+ 
+         // Daily schedule: load persisted contracts for today, then reset-count budget.
+         TodayAssignmentManager.Instance.OnCharacterEnterWorld(Connection.ActiveChar);
++        DaProdGameplay.OnEnterGame(Connection.ActiveChar);
+         AccountAttendanceManager.Instance.SendMonth(Connection.ActiveChar);
+         ItemWallet.ConvertOwnedMileage(Connection.ActiveChar);
+         ItemWallet.ConvertOwnedCashPacks(Connection.ActiveChar);
 --- a/AAEmu.Game/Models/Game/Char/Character.cs
 +++ b/AAEmu.Game/Models/Game/Char/Character.cs
 @@ -3144,6 +3144,68 @@
@@ -514,9 +522,85 @@
          }
          else
          {
+--- a/AAEmu.Game/Core/Managers/TodayAssignmentManager.cs
++++ b/AAEmu.Game/Core/Managers/TodayAssignmentManager.cs
+@@ -9,6 +9,7 @@
+ using AAEmu.Game.Models.Game.Char;
+ using AAEmu.Game.Models.Game.Items;
+ using AAEmu.Game.Models.Game.Items.Actions;
++using AAEmu.Game.Models.Game.Quests.Static;
+ using AAEmu.Game.Models.Game.TodayAssignment;
+ using MySql.Data.MySqlClient;
+ using NLog;
+@@ -741,6 +742,23 @@
+         Persist(character.Id, realStep, state);
+         SendState(character, realStep, state, init: false);
+         SendResetCount(character);
++
++        // DaProd: "dailyInstant" completes the contract right away (quest goes straight to its reward step).
++        if (DaProdTweaks.On("dailyInstant"))
++        {
++            try
++            {
++                if (character.Quests.ActiveQuests.TryGetValue(primaryQuestId, out var instantQuest))
++                {
++                    instantQuest.Step = QuestComponentKind.Reward;
++                    Logger.Info("DAPROD daily instant {0}: quest={1}", character.Name, primaryQuestId);
++                }
++            }
++            catch (Exception ex)
++            {
++                Logger.Warn(ex, "DAPROD daily instant failed for quest {0}", primaryQuestId);
++            }
++        }
+ 
+         Logger.Info(
+             "TodayAssignment accepted {0}: realStep={1} group={2} quest={3}",
+--- a/AAEmu.Game/Core/Packets/C2G/RandomShopMerchantRange.cs
++++ b/AAEmu.Game/Core/Packets/C2G/RandomShopMerchantRange.cs
+@@ -31,7 +31,7 @@
+         }
+ 
+         if (doodadObjId == 0)
+-            return 0;
++            return DaProdGameplay.DirectRandomShopPack(); // DaProd: shop opened from the HUD button, no NPC nearby
+ 
+         var doodad = character.ParentWorld.GetDoodad(doodadObjId);
+         if (doodad == null)
+--- a/AAEmu.Game/Core/Packets/C2G/CSStartSkillPacket.cs
++++ b/AAEmu.Game/Core/Packets/C2G/CSStartSkillPacket.cs
+@@ -326,7 +326,7 @@
+                     isCommonSkill: SkillManager.Instance.IsCommonSkill(skillId)) &&
+                 !Connection.ActiveChar.Skills.HasSkill(skillId))
+             {
+-                Logger.Warn("StartSkill rejected unlearned ability skill {0} for {1}", skillId, Connection.ActiveChar.Name);
++                Logger.Debug("StartSkill rejected unlearned ability skill {0} for {1}", skillId, Connection.ActiveChar.Name);
+                 SendSkillResult(skillId, skillCaster, skillCastTarget, skillObject, skill,
+                     SkillUseConditionRules.UnlearnedSkillResult);
+                 return;
+@@ -397,7 +397,7 @@
+                 isCommonSkill: SkillManager.Instance.IsCommonSkill(skillId)) &&
+             !character.Skills.HasSkill(skillId))
+         {
+-            Logger.Warn("ZoneAuthority StartSkill rejected unlearned ability skill {0} for {1}", skillId, character.Name);
++            Logger.Debug("ZoneAuthority StartSkill rejected unlearned ability skill {0} for {1}", skillId, character.Name);
+             SendSkillResult(skillId, skillCaster, skillCastTarget, skillObject, new Skill(template),
+                 SkillUseConditionRules.UnlearnedSkillResult);
+             return;
+--- a/AAEmu.WorldServer/AAEmu.World/Core/Relay/TowerDefScheduler.cs
++++ b/AAEmu.WorldServer/AAEmu.World/Core/Relay/TowerDefScheduler.cs
+@@ -426,7 +426,7 @@
+         var hosts = EnumeratePlayableHosts(towerDef.Id, manualFallbackAll: manual).ToList();
+         if (hosts.Count == 0)
+         {
+-            Logger.Warn(
++            Logger.Debug(
+                 "TowerDef {0} skipped Start — no zone with playable spots (spawner={1}) — {2} ({3})",
+                 towerDef.Id, towerDef.TargetNpcSpawnId, reason, towerDef.Name);
+             return;
 --- /dev/null
 +++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,150 @@
 +using System.Runtime.CompilerServices;
 +using AAEmu.Commons.Utils.DB;
 +using AAEmu.Game.Core.Managers;
@@ -524,6 +608,7 @@
 +using AAEmu.Game.Core.Packets.G2C;
 +using AAEmu.Game.Models.Game.Char;
 +using AAEmu.Game.Models.Game.Items;
++using AAEmu.Game.Models.StaticValues;
 +using NLog;
 +
 +namespace AAEmu.World.Core;
@@ -604,7 +689,7 @@
 +            string result;
 +            try
 +            {
-+                var character = kind is "gold" or "labor" or "passpoints" ? WorldManager.Instance.GetCharacterById(charId) : null;
++                var character = kind is "gold" or "labor" or "passpoints" or "honor" or "vocation" ? WorldManager.Instance.GetCharacterById(charId) : null;
 +                if (kind == "labor")
 +                    result = FillLabor(c, charId, character);
 +                else if (kind == "passpoints")
@@ -614,6 +699,24 @@
 +                {
 +                    CashShopManager.Instance.Load();
 +                    result = "online";
++                }
++                else if (kind is "honor" or "vocation")
++                {
++                    var delta = (int)Math.Clamp(amount, int.MinValue, int.MaxValue);
++                    if (character != null)
++                    {
++                        character.ChangeGamePoints(kind == "honor" ? GamePointKind.Honor : GamePointKind.Vocation, delta, false);
++                        result = "online";
++                    }
++                    else
++                    {
++                        using var u = c.CreateCommand();
++                        var col = kind == "honor" ? "honor_point" : "vocation_point";
++                        u.CommandText = $"UPDATE characters SET {col}=GREATEST(0, {col}+@a) WHERE id=@i";
++                        u.Parameters.AddWithValue("@a", delta);
++                        u.Parameters.AddWithValue("@i", charId);
++                        result = u.ExecuteNonQuery() > 0 ? "offline" : "personaggio non trovato";
++                    }
 +                }
 +                else if (kind != "gold")
 +                    result = "comando sconosciuto";
@@ -764,5 +867,43 @@
 +                await Task.Delay(TimeSpan.FromMinutes(10));
 +            }
 +        });
++    }
++}
+--- /dev/null
++++ b/AAEmu.Game/DaProdGameplay.cs
+@@ -0,0 +1,35 @@
++using AAEmu.Game.Core.Packets;
++using AAEmu.Game.Models.Game.Char;
++using NLog;
++
++namespace AAEmu.Game;
++
++/// <summary>DaProd: small gameplay switches driven by DaProdTweaks (Manastorm shop on the HUD button).</summary>
++public static class DaProdGameplay
++{
++    private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
++
++    /// <summary>merchant_random_packs id of the Manastorm (Palos) shop.</summary>
++    public const uint ManastormPack = 7;
++
++    /// <summary>Pack opened by the HUD "random shop" button (no NPC): the Manastorm shop when enabled.</summary>
++    public static uint DirectRandomShopPack() => DaProdTweaks.On("manastormShop") ? ManastormPack : 0u;
++
++    /// <summary>
++    /// Pushes the Manastorm shop record to the client at login: the client enables the HUD random-shop button once it
++    /// holds a record for it, and only shows the window when the player opens the store.
++    /// </summary>
++    public static void OnEnterGame(Character character)
++    {
++        if (character == null || !DaProdTweaks.On("manastormShop"))
++            return;
++        try
++        {
++            RandomShopUiService.SendInfo(character, ManastormPack, ManastormPack);
++        }
++        catch (Exception ex)
++        {
++            Logger.Warn(ex, "DAPROD manastorm shop push failed for {0}", character.Name);
++        }
 +    }
 +}

@@ -33,6 +33,7 @@ public sealed partial class MainForm
         bar.Controls.Add(Ui.Btn("Ferma", Ui.Red, () => Bg(() => { _srv.StopAll(); return Task.CompletedTask; }), 110));
         bar.Controls.Add(Ui.Btn("Riavvia", Ui.Blue, async () => { await Bg(() => { _srv.StopAll(); return Task.CompletedTask; }); await Task.Delay(2000); await Bg(() => _srv.StartAllAsync()); }, 120));
         bar.Controls.Add(_maintBtn = Ui.Btn(_s.Maintenance ? "Fine manutenzione" : "Manutenzione", _s.Maintenance ? Ui.Green : Ui.Orange, ToggleMaintenance, 180));
+        bar.Controls.Add(Ui.Btn("Gioca (apri il launcher)", Ui.Green, PlayNow, 220));
         bar.Controls.Add(Ui.Btn("File per gli amici", Ui.Purple, ShowFriendLauncher, 170));
         bar.Controls.Add(Ui.Btn("Pacchetto dati", Ui.Grey, MakeDataPack, 150));
         bar.Controls.Add(Ui.Btn("Aggiornamenti", Ui.Grey, CheckUpdates, 150));
@@ -84,6 +85,23 @@ public sealed partial class MainForm
     }
 
     /// <summary>Il launcher per gli amici è un solo exe, sempre aggiornato: qui si trova il file da mandare.</summary>
+    /// <summary>Apre il launcher su questo PC (con il server acceso si entra subito in gioco).</summary>
+    Task PlayNow()
+    {
+        var exe = FriendLauncher.BasePath;
+        if (!File.Exists(exe)) { MessageBox.Show("Il launcher non c'è (cartella launcher): ricompila con build.ps1.", "Launcher"); return Task.CompletedTask; }
+        if (Process.GetProcessesByName("DaProdLauncher").Length > 0 || Process.GetProcessesByName("DaProdLauncher-Amici").Length > 0)
+        {
+            MessageBox.Show("Il launcher è già aperto.", "Launcher");
+            return Task.CompletedTask;
+        }
+        if (!_srv.IsRunning("game") && MessageBox.Show("Il server non è ancora acceso: il launcher non potrà entrare in gioco. Lo apro lo stesso?", "Launcher", MessageBoxButtons.YesNo) != DialogResult.Yes)
+            return Task.CompletedTask;
+        try { Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = Path.GetDirectoryName(exe)!, UseShellExecute = true }); }
+        catch (Exception ex) { MessageBox.Show("Non riesco ad aprire il launcher: " + ex.Message, "Launcher"); }
+        return Task.CompletedTask;
+    }
+
     async Task ShowFriendLauncher()
     {
         if (_s.UseTailscale && _s.IsNetBird && !File.Exists(PanelSettings.NetBirdExe))
@@ -225,13 +243,25 @@ public sealed partial class MainForm
             var v = Ui.Prompt(this, "Quanti punti pass aggiungere?", "1000"); if (!long.TryParse(v, out var pts) || pts <= 0) return;
             MessageBox.Show(await Bg2(() => _srv.GivePassPointsAsync(id, pts)), "Punti pass");
         }, 120));
+        b2.Controls.Add(Ui.Btn("Punti onore", Ui.Purple, async () =>
+        {
+            if (SelId(_chars, "id") is not { } id) { MessageBox.Show("Seleziona un personaggio."); return; }
+            var v = Ui.Prompt(this, "Quanti punti onore aggiungere? (negativo per togliere)", "10000"); if (!long.TryParse(v, out var pts) || pts == 0) return;
+            MessageBox.Show(await Bg2(() => _srv.GiveHonorAsync(id, pts)), "Punti onore");
+        }, 130));
+        b2.Controls.Add(Ui.Btn("Punti vocazione", Ui.Purple, async () =>
+        {
+            if (SelId(_chars, "id") is not { } id) { MessageBox.Show("Seleziona un personaggio."); return; }
+            var v = Ui.Prompt(this, "Quanti punti vocazione aggiungere? (negativo per togliere)", "10000"); if (!long.TryParse(v, out var pts) || pts == 0) return;
+            MessageBox.Show(await Bg2(() => _srv.GiveVocationAsync(id, pts)), "Punti vocazione");
+        }, 150));
         b2.Controls.Add(Ui.Btn("Imposta livello", Ui.Purple, async () =>
         {
             var v = Ui.Prompt(this, "Nuovo livello (1-55):", "50"); if (!int.TryParse(v, out var l) || l is < 1 or > 55) return;
             await SetCharAsync("UPDATE characters SET level=@l WHERE id=@i", ("@l", l));
         }, 150));
         t2.Controls.Add(_chars); t2.Controls.Add(Ui.Gap()); t2.Controls.Add(b2);
-        t2.Controls.Add(Ui.Hint("Dai oro, Riempi labor e Punti pass funzionano in tempo reale anche con il personaggio in gioco. Le altre modifiche (GM, sblocco, livello) vanno fatte con il personaggio OFFLINE, altrimenti il salvataggio del gioco le sovrascrive.", 44));
+        t2.Controls.Add(Ui.Hint("Dai oro, Riempi labor, Punti pass, onore e vocazione funzionano in tempo reale anche con il personaggio in gioco. Le altre modifiche (GM, sblocco, livello) vanno fatte con il personaggio OFFLINE, altrimenti il salvataggio del gioco le sovrascrive.", 44));
 
         _accs = Ui.Grid();
         var b3 = Ui.Bar();

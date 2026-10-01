@@ -208,6 +208,13 @@ public static class ZoneCatalog
     /// <summary>Gruppo di regione (es. le 3 parti di Solzreed): si caricano insieme.</summary>
     public static int GroupOf(string name) { IdOf(name); return Groups.GetValueOrDefault(name); }
 
+    /// <summary>Nome della zona dal suo id (null se sconosciuta).</summary>
+    public static string? NameOf(uint id)
+    {
+        IdOf("");
+        return _ids!.Where(kv => kv.Value == id).Select(kv => kv.Key).FirstOrDefault();
+    }
+
     public static uint IdOf(string name)
     {
         if (_ids == null)
@@ -220,8 +227,8 @@ public static class ZoneCatalog
                 foreach (var l in rd.ReadToEnd().Split('\n').Select(x => x.TrimEnd('\r')).Where(l => l.Length > 0 && l[0] != '#'))
                 {
                     var p = l.Split('\t');
-                    if (p.Length >= 2 && uint.TryParse(p[0], out var id)) _ids[p[1]] = id;
-                    if (p.Length >= 4 && int.TryParse(p[3], out var g)) Groups[p[1]] = g;
+                    if (p.Length >= 2 && uint.TryParse(p[0], out var id)) _ids[p[1].Trim()] = id;
+                    if (p.Length >= 4 && int.TryParse(p[3], out var g)) Groups[p[1].Trim()] = g;
                 }
             }
         }
