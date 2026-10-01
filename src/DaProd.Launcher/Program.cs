@@ -18,6 +18,14 @@ static class Program
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) => MessageBox.Show(e.Exception.Message, "Ponticheage Launcher");
 
+        // prova del menu oggetti senza il gioco: --dap-test utente token idPersonaggio
+        var dt = Array.IndexOf(args, "--dap-test");
+        if (dt >= 0 && args.Length > dt + 3)
+        {
+            Application.Run(new DapForm(new HttpClient(), p => "http://127.0.0.1:8080" + p, args[dt + 1], args[dt + 2], long.Parse(args[dt + 3]), "Prova"));
+            return;
+        }
+
         // splash: si vede mentre il launcher si prepara (--nosplash la salta)
         SplashForm? splash = null;
         if (!args.Contains("--nosplash")) { try { splash = new SplashForm(); splash.Show(); splash.Step(0, 2400); } catch { splash = null; } }

@@ -816,6 +816,16 @@ public sealed partial class ServerManager(PanelSettings s, Action<string, string
         return $"{exp}.{Convert.ToHexString(h.ComputeHash(Encoding.UTF8.GetBytes($"{user}|{exp}"))).ToLowerInvariant()}";
     }
 
+    /// <summary>Controlla un token emesso da MakeToken per quell'utente (firma e scadenza).</summary>
+    public bool VerifyToken(string user, string token)
+    {
+        var p = (token ?? "").Split('.');
+        if (p.Length != 2 || !long.TryParse(p[0], out var exp) || exp < DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return false;
+        using var h = new HMACSHA256(Encoding.UTF8.GetBytes(s.TokenSecret));
+        var want = Convert.ToHexString(h.ComputeHash(Encoding.UTF8.GetBytes($"{user}|{exp}"))).ToLowerInvariant();
+        return CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(want), Encoding.ASCII.GetBytes(p[1]));
+    }
+
     /// <summary>Tabella dei comandi in tempo reale: il World la legge ogni 2 secondi (vedi DaProdCommands.cs nella patch di AAEmu).</summary>
     public Task<int> EnsureCommandTableAsync() =>
         ExecAsync("aaemu_game", "CREATE TABLE IF NOT EXISTS daprod_commands (id BIGINT AUTO_INCREMENT PRIMARY KEY, kind VARCHAR(20) NOT NULL, " +

@@ -77,6 +77,7 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
             var path = Uri.UnescapeDataString(ctx.Request.Url!.AbsolutePath);
             var post = ctx.Request.HttpMethod == "POST";
             if (post && path is "/login" or "/register") { await Auth(ctx, path); return; }
+            if (path.StartsWith("/dap/")) { await Dap(ctx, path); return; }
             if (path == "/ping") { ctx.Response.StatusCode = 204; ctx.Response.Close(); return; }
             if (path == "/launcher.exe")
             {
@@ -108,6 +109,67 @@ public sealed class LauncherApi(PanelSettings s, Action<string, string> log, Fun
             ctx.Response.Close();
         }
         catch { try { ctx.Response.Abort(); } catch { } }
+    }
+
+    /// <summary>Menu creativo /dap: richiesta dal gioco, elenco oggetti con anteprima, consegna in borsa.</summary>
+    async Task Dap(HttpListenerContext ctx, string path)
+    {
+        async Task Json(object o, int code = 200)
+        {
+            var b = JsonSerializer.SerializeToUtf8Bytes(o);
+            ctx.Response.StatusCode = code; ctx.Response.ContentType = "application/json"; ctx.Response.ContentLength64 = b.Length;
+            await ctx.Response.OutputStream.WriteAsync(b); ctx.Response.Close();
+        }
+        if (path.StartsWith("/dap/icon/"))
+        {
+            var name = path["/dap/icon/".Length..].Replace(".png", "");
+            var png = uint.TryParse(name, out var iid) ? ItemCatalog.Icon(iid) : null;
+            if (png == null) { ctx.Response.StatusCode = 404; ctx.Response.Close(); return; }
+            ctx.Response.ContentType = "image/png"; ctx.Response.ContentLength64 = png.Length;
+            ctx.Response.Headers["Cache-Control"] = "max-age=86400";
+            await ctx.Response.OutputStream.WriteAsync(png); ctx.Response.Close();
+            return;
+        }
+        var q = ctx.Request.QueryString;
+        var user = q["user"] ?? "";
+        if (user.Length is < 1 or > 32 || !srv.VerifyToken(user, q["t"] ?? "")) { await Json(new { ok = false, message = "Accesso non valido: rientra dal launcher." }, 401); return; }
+        if (!Tweaks.On("dapMenu")) { await Json(new { ok = false, message = "Il menu oggetti è disattivato." }, 403); return; }
+
+        if (path == "/dap/poll")
+        {
+            await srv.ExecAsync("aaemu_game", "CREATE TABLE IF NOT EXISTS daprod_dap (char_id INT UNSIGNED NOT NULL PRIMARY KEY, at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+            var t = await srv.QueryAsync("aaemu_game", "SELECT d.char_id, c.name FROM daprod_dap d JOIN characters c ON c.id=d.char_id JOIN aaemu_login.users u ON u.id=c.account_id " +
+                "WHERE u.username=@u AND d.at > NOW() - INTERVAL 40 SECOND ORDER BY d.at DESC LIMIT 1", ("@u", user));
+            if (t.Rows.Count == 0) { await Json(new { open = false }); return; }
+            var cid = Convert.ToInt64(t.Rows[0][0]);
+            await srv.ExecAsync("aaemu_game", "DELETE FROM daprod_dap WHERE char_id=@c", ("@c", cid));
+            await Json(new { open = true, charId = cid, name = t.Rows[0][1]?.ToString() });
+            return;
+        }
+        if (path == "/dap/items")
+        {
+            _ = uint.TryParse(q["cat"], out var cat); _ = int.TryParse(q["skip"], out var skip);
+            var (total, page) = await Task.Run(() => ItemCatalog.Search(q["q"] ?? "", cat, Math.Max(0, skip), 200));
+            await Json(new
+            {
+                total, items = page.Select(i => new { id = i.Id, name = i.Name, icon = i.Icon, cat = i.Cat, grade = i.Grade, level = i.Level }),
+                cats = q["cats"] == "1" ? ItemCatalog.Categories().Select(c => new { id = c.Id, name = c.Name }) : null
+            });
+            return;
+        }
+        if (path == "/dap/give")
+        {
+            if (!uint.TryParse(q["item"], out var item) || !long.TryParse(q["char"], out var cid)) { await Json(new { ok = false, message = "Richiesta non valida." }, 400); return; }
+            _ = int.TryParse(q["count"], out var count); count = Math.Clamp(count, 1, 9999);
+            // il personaggio deve essere dell'account che ha fatto accesso
+            var own = await srv.QueryAsync("aaemu_game", "SELECT c.id FROM characters c JOIN aaemu_login.users u ON u.id=c.account_id WHERE u.username=@u AND c.id=@c", ("@u", user), ("@c", cid));
+            if (own.Rows.Count == 0) { await Json(new { ok = false, message = "Quel personaggio non è tuo." }, 403); return; }
+            var msg = await srv.GiveItemAsync(cid, item, count);
+            log("dap", $"{user} -> {item} x{count}: {msg}");
+            await Json(new { ok = msg.StartsWith("Oggetto consegnato"), message = msg });
+            return;
+        }
+        await Json(new { ok = false, message = "?" }, 404);
     }
 
     /// <summary>Invia un file, con supporto a Range (ripresa dei download).</summary>

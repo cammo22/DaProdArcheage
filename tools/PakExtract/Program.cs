@@ -27,9 +27,12 @@ if (args.Length >= 4 && args[2] == "--list")
     return 0;
 }
 
-long total = pak.Files.Sum(f => f.Size), done = 0;
+// opzionale: --only <testo> estrae solo i file il cui percorso contiene il testo
+var only = args.Length >= 4 && args[2] == "--only" ? args[3] : null;
+var files = only == null ? pak.Files.ToList() : pak.Files.Where(f => f.Name.Contains(only, StringComparison.OrdinalIgnoreCase)).ToList();
+long total = files.Sum(f => f.Size), done = 0;
 int n = 0, skipped = 0;
-foreach (var f in pak.Files)
+foreach (var f in files)
 {
     var dest = Path.Combine(args[1], f.Name.Replace('/', Path.DirectorySeparatorChar));
     n++;
@@ -40,7 +43,7 @@ foreach (var f in pak.Files)
     using (var dst = File.Create(dest))
         src.CopyTo(dst);
     done += f.Size;
-    if (n % 500 == 0) Console.WriteLine($"PROGRESS {n}/{pak.Files.Count} {done * 100 / Math.Max(1, total)}%");
+    if (n % 500 == 0) Console.WriteLine($"PROGRESS {n}/{files.Count} {done * 100 / Math.Max(1, total)}%");
 }
 Console.WriteLine($"FATTO {n} file ({skipped} già presenti)");
 pak.ClosePak();

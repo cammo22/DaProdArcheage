@@ -12,6 +12,7 @@ public sealed class LauncherForm : Form
     HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
     HttpClient _dl = new() { Timeout = Timeout.InfiniteTimeSpan };
     GameUpdater _updater;
+    string? _dapUser, _dapToken; bool _dapPolling; DapForm? _dap;
     VpnTunnel? _tunnel;
     ServerInfo? _info;
     GameUpdater.Plan? _plan;
@@ -127,7 +128,6 @@ public sealed class LauncherForm : Form
 
         ApplyMode(passLbl2);
         UpdateChips();
-        AddonInstaller.Install();
         Relayout();
         SizeChanged += (_, _) => Relayout();
         Shown += async (_, _) => { FitToScreen(); Relayout(); _user.SelectionStart = _user.TextLength; _user.SelectionLength = 0; if (!Program.TestMode) await Run(Connect); };
@@ -399,6 +399,7 @@ public sealed class LauncherForm : Form
         var r = await Auth("/login", user, _pass.Text);
         if (!r.ok || r.token == null) { Msg(r.message ?? "Accesso rifiutato.", true); return; }
         SaveLogin(); Msg("");
+        _dapUser = user; _dapToken = r.token;
 
         if (!DirectX.Installed)
         {
@@ -426,13 +427,36 @@ public sealed class LauncherForm : Form
         // database personalizzato del server (pass, testi...): viaggia con gli aggiornamenti, il client lo carica con db_location
         if (File.Exists(Path.Combine(_s.GameDir, "game", "db", "daprod.sqlite3")) && !args.Contains("db_location"))
             args += " +db_location game/db/daprod.sqlite3";
-        AddonInstaller.Install(); // pulsanti e finestre in più del mod dell'interfaccia
         var p = Process.Start(new ProcessStartInfo(exe, args) { WorkingDirectory = Path.GetDirectoryName(exe)! });
         if (p == null) { Msg("Impossibile avviare il gioco.", true); return; }
         _gameRunning = true; p.EnableRaisingEvents = true;
         p.Exited += (_, _) => BeginInvoke(() => { _gameRunning = false; WindowState = FormWindowState.Normal; UpdatePlayButton(); SetStatus("Gioco chiuso."); });
         SetStatus("Gioco avviato. Buon divertimento!");
         WindowState = FormWindowState.Minimized;
+    }
+
+    /// <summary>Con il gioco aperto: se in chat hai scritto /dap, il server lo segnala e si apre il menu oggetti.</summary>
+    async Task PollDap()
+    {
+        if (_dapPolling || !_gameRunning || _dapToken == null || _dapUser == null) return;
+        _dapPolling = true;
+        try
+        {
+            var u = Api($"/dap/poll?user={Uri.EscapeDataString(_dapUser)}&t={Uri.EscapeDataString(_dapToken)}");
+            var doc = await _http.GetFromJsonAsync<System.Text.Json.JsonElement>(u);
+            if (doc.TryGetProperty("open", out var o) && o.GetBoolean())
+            {
+                var charId = doc.GetProperty("charId").GetInt64(); var name = doc.GetProperty("name").GetString() ?? "";
+                if (_dap == null || _dap.IsDisposed)
+                {
+                    _dap = new DapForm(_http, Api, _dapUser, _dapToken, charId, name);
+                    _dap.Show();
+                }
+                _dap.Activate();
+            }
+        }
+        catch { }
+        finally { _dapPolling = false; }
     }
 
     // ------------------------------------------------------------------ varie
@@ -480,6 +504,7 @@ public sealed class LauncherForm : Form
             SetStatus("Scarico: " + _updater.Current);
             return;
         }
+        if (_n % 4 == 3) _ = PollDap();
         if (++_n % 10 == 0 && !_busy) { await RefreshInfo(); CheckDx(); }
     }
 }

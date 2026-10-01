@@ -66,6 +66,8 @@ Il pacchetto dati si crea sul PC dove tutto funziona con **Server > Pacchetto da
 - **Gear Upgrade (sintesi)**: i pezzi della storia (pool `live.19.07.main.*`) ora salgono davvero fino al massimo (prima restavano a Grand con la barra piena: il server leggeva i costi come "prezzo del grado che si raggiunge", il client come "costo per lasciare il grado"). **Lunafrost** (lunastone): i bonus ora contano (prima erano salvati ma mai applicati).
 - **Aggiornamento automatico** di Daily Schedule e pass: finita una missione lo stato viene rimandato al client (`DaProdTodayRefreshTask`).
 - **Mod dell'interfaccia** (`addons/DaProdMod`): addon del client installato dal launcher in Documenti\ArcheAge\Addon. Parla col server con una posta a "DaProd" (intercettata in `CSSendMailPacket`, comandi in `DaProdGameplay.HandleUiCommand`). Per ora: finestra "Tieni il nuovo / Ripristina il vecchio" dopo un Replace Effect.
+- **Menu creativo `/dap`**: in chat `/dap` apre sul launcher una finestra con tutti gli oggetti del gioco (anteprima, ricerca, categorie) e li mette in borsa. Server: comando `Dap.cs`, API `/dap/*` in `LauncherApi.cs`, catalogo `ItemCatalog.cs`; icone in `server\catalog\icons.zip` (`tools/mkcatalogicons.py`). Il mod Lua dell'interfaccia (`addons/`) resta nel repo ma il launcher non lo installa più.
+- **Teletrasporti/portali** verso una zona spenta: la zona viene richiesta e si arriva appena è pronta.
 - **Gioca**: il pulsante "Gioca (apri il launcher)" del pannello apre il launcher su questo PC.
 - Icone: `python tools/makeicons.py`.
 

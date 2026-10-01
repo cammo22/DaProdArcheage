@@ -937,11 +937,12 @@
      }
 --- a/AAEmu.Game/Configurations/AccessLevels.json
 +++ b/AAEmu.Game/Configurations/AccessLevels.json
-@@ -4,6 +4,7 @@
+@@ -4,6 +4,8 @@
          // Always keep help at zero
          "help": 0,
      "gearscore": 0,
 +    "annulla": 0,
++    "dap": 0,
          "fly": 0,
          
          "online": 0,
@@ -962,6 +963,22 @@
          Logger.Debug($"SendMail by {character.Name} to {receiverCharName} (ref {receiverRefId}), group={groupMail}, extraUsers={userList.Count}, groupMoney={groupMoney}");
  
          if (character.Level + character.HeirLevel < AppConfiguration.Instance.LevelRestrictions.MailLevel)
+--- a/AAEmu.Game/Models/Game/Skills/SkillTeleportLanding.cs
++++ b/AAEmu.Game/Models/Game/Skills/SkillTeleportLanding.cs
+@@ -68,7 +68,12 @@
+             case TeleportLandingKind.World:
+                 if (!TeleportLandingRules.CanLandInZone(
+                         WorldIntegration.ZoneAuthority, WorldIntegration.IsZoneLoaded, zoneId))
+-                    return false;
++                {
++                    // DaProd: ask for the zone and land as soon as it is up, instead of dropping the teleport
++                    if (WorldIntegration.IsZoneLoaded != null)
++                        DaProdLandRetryTask.Start(character, zoneId, x, y, z, yawRad, reason);
++                    return true;
++                }
+                 ApplyWorld(character, zoneId, x, y, z, yawRad, reason);
+                 return true;
+             case TeleportLandingKind.InstanceDungeon:
 --- /dev/null
 +++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
 @@ -0,0 +1,172 @@
@@ -1257,7 +1274,7 @@
 +}
 --- /dev/null
 +++ b/AAEmu.Game/DaProdGameplay.cs
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,148 @@
 +using AAEmu.Game.Core.Packets;
 +using AAEmu.Game.Models.Game.Char;
 +using NLog;
@@ -1329,6 +1346,37 @@
 +
 +    /// <summary>Recipient name the client mod uses to send commands to the server (mail receiver).</summary>
 +    public const string UiBusName = "DaProd";
++
++    /// <summary>/dap: asks the launcher on the player's PC to open the creative item menu (the panel's API hands it out).</summary>
++    public static void RequestDap(Character character)
++    {
++        if (!DaProdTweaks.On("dapMenu"))
++        {
++            character.SendMessage("[DAP] il menu oggetti è disattivato.");
++            return;
++        }
++
++        try
++        {
++            using var c = AAEmu.Commons.Utils.DB.MySQL.CreateConnection();
++            using (var t = c.CreateCommand())
++            {
++                t.CommandText = "CREATE TABLE IF NOT EXISTS daprod_dap (char_id INT UNSIGNED NOT NULL PRIMARY KEY, at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)";
++                t.ExecuteNonQuery();
++            }
++
++            using var w = c.CreateCommand();
++            w.CommandText = "REPLACE INTO daprod_dap (char_id, at) VALUES (@c, NOW())";
++            w.Parameters.AddWithValue("@c", character.Id);
++            w.ExecuteNonQuery();
++            character.SendMessage("[DAP] apro il menu oggetti: guarda la finestra che compare sul tuo PC (serve il launcher aperto).");
++        }
++        catch (Exception ex)
++        {
++            Logger.Warn(ex, "DAPROD dap request failed for {0}", character.Name);
++            character.SendMessage("[DAP] non riesco ad aprire il menu.");
++        }
++    }
 +
 +    /// <summary>Commands sent by the client mod's buttons.</summary>
 +    public static void HandleUiCommand(Character character, string command, string args)
@@ -1561,5 +1609,79 @@
 +    public void Execute(Character character, string[] args, IMessageOutput messageOutput)
 +    {
 +        CommandManager.SendNormalText(this, messageOutput, DaProdGameplay.UndoReroll(character));
++    }
++}
+--- /dev/null
++++ b/AAEmu.Game/DaProdLandRetryTask.cs
+@@ -0,0 +1,42 @@
++using AAEmu.Game.Core.Managers;
++using AAEmu.Game.Core.Managers.World;
++using AAEmu.Game.Models.Game.Skills;
++using AAEmu.Game.Models.Game.Teleport;
++using NLog;
++
++namespace AAEmu.Game;
++
++/// <summary>
++/// DaProd: a portal/teleport into a zone that is not loaded yet used to fail on the spot ("could not land"). Now the zone is requested
++/// (the panel starts it) and the landing is retried every second until the zone answers, for up to two minutes.
++/// </summary>
++public sealed class DaProdLandRetryTask(uint characterId, uint zoneId, float x, float y, float z, float yaw, TeleportReason reason, DateTime until)
++    : AAEmu.Game.Models.Tasks.Task
++{
++    private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
++
++    public override void Execute()
++    {
++        var character = WorldManager.Instance.GetCharacterById(characterId);
++        if (character == null || DateTime.UtcNow > until)
++        {
++            Cancel();
++            return;
++        }
++
++        if (WorldIntegration.IsZoneLoaded == null || !WorldIntegration.IsZoneLoaded(zoneId))
++            return;
++
++        Cancel();
++        if (!SkillTeleportLanding.TryApplyToWorld(character, character.ParentWorld, zoneId, x, y, z, yaw, reason))
++            Logger.Warn("DAPROD teleport retry: {0} still could not land in zone {1}", character.Name, zoneId);
++    }
++
++    public static void Start(Models.Game.Char.Character character, uint zoneId, float x, float y, float z, float yaw, TeleportReason reason)
++    {
++        Logger.Info("DAPROD_ZONE_NEED zone={0} inst=0", zoneId);
++        character.SendMessage("Zona in caricamento: arrivi appena è pronta (anche un minuto).");
++        TaskManager.Instance.Schedule(new DaProdLandRetryTask(character.Id, zoneId, x, y, z, yaw, reason, DateTime.UtcNow.AddMinutes(2)),
++            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), -1);
++    }
++}
+--- /dev/null
++++ b/AAEmu.Game/Scripts/Commands/Dap.cs
+@@ -0,0 +1,26 @@
++using AAEmu.Game.Core.Managers;
++using AAEmu.Game.Models.Game;
++using AAEmu.Game.Models.Game.Char;
++using AAEmu.Game.Utils.Scripts;
++
++namespace AAEmu.Game.Scripts.Commands;
++
++/// <summary>DaProd: /dap opens the creative item menu (shown by the launcher).</summary>
++public class Dap : ICommand
++{
++    public string[] CommandNames { get; set; } = ["dap"];
++
++    public void OnLoad()
++    {
++        CommandManager.Instance.Register(CommandNames, this);
++    }
++
++    public string GetCommandLineHelp() => "";
++
++    public string GetCommandHelpText() => "Apre il menu creativo con tutti gli oggetti (sul launcher).";
++
++    public void Execute(Character character, string[] args, IMessageOutput messageOutput)
++    {
++        DaProdGameplay.RequestDap(character);
 +    }
 +}
