@@ -945,6 +945,23 @@
          "fly": 0,
          
          "online": 0,
+--- a/AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs
++++ b/AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs
+@@ -71,6 +71,14 @@
+         for (var i = 0; i < userCount && i < 100; i++)
+             userList.Add(stream.ReadUInt64());
+ 
++        // DaProd: the client-side mod (addon "DaProdMod") talks to the server through a mail addressed to "DaProd":
++        // title = command, text = arguments. Nothing is delivered or charged.
++        if (string.Equals(receiverCharName, DaProdGameplay.UiBusName, StringComparison.OrdinalIgnoreCase))
++        {
++            DaProdGameplay.HandleUiCommand(character, title, text);
++            return;
++        }
++
+         Logger.Debug($"SendMail by {character.Name} to {receiverCharName} (ref {receiverRefId}), group={groupMail}, extraUsers={userList.Count}, groupMoney={groupMoney}");
+ 
+         if (character.Level + character.HeirLevel < AppConfiguration.Instance.LevelRestrictions.MailLevel)
 --- /dev/null
 +++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
 @@ -0,0 +1,172 @@
@@ -1240,7 +1257,7 @@
 +}
 --- /dev/null
 +++ b/AAEmu.Game/DaProdGameplay.cs
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,117 @@
 +using AAEmu.Game.Core.Packets;
 +using AAEmu.Game.Models.Game.Char;
 +using NLog;
@@ -1308,6 +1325,33 @@
 +        lock (_rerolls)
 +            _rerolls.Remove(character.Id);
 +        return "Effetto precedente rimesso.";
++    }
++
++    /// <summary>Recipient name the client mod uses to send commands to the server (mail receiver).</summary>
++    public const string UiBusName = "DaProd";
++
++    /// <summary>Commands sent by the client mod's buttons.</summary>
++    public static void HandleUiCommand(Character character, string command, string args)
++    {
++        try
++        {
++            switch ((command ?? "").Trim().ToLowerInvariant())
++            {
++                case "ping":
++                    character.SendMessage("[DaProd] collegamento con il mod OK.");
++                    break;
++                case "undo":
++                    character.SendMessage("[DaProd] " + UndoReroll(character));
++                    break;
++                default:
++                    Logger.Info("DAPROD ui: unknown command '{0}' from {1}", command, character.Name);
++                    break;
++            }
++        }
++        catch (Exception ex)
++        {
++            Logger.Warn(ex, "DAPROD ui command {0} failed for {1}", command, character?.Name);
++        }
 +    }
 +
 +    /// <summary>Pack opened by the HUD "random shop" button (no NPC): the Manastorm shop when enabled.</summary>

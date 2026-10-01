@@ -127,6 +127,7 @@ public sealed class LauncherForm : Form
 
         ApplyMode(passLbl2);
         UpdateChips();
+        AddonInstaller.Install();
         Relayout();
         SizeChanged += (_, _) => Relayout();
         Shown += async (_, _) => { FitToScreen(); Relayout(); _user.SelectionStart = _user.TextLength; _user.SelectionLength = 0; if (!Program.TestMode) await Run(Connect); };
@@ -425,6 +426,7 @@ public sealed class LauncherForm : Form
         // database personalizzato del server (pass, testi...): viaggia con gli aggiornamenti, il client lo carica con db_location
         if (File.Exists(Path.Combine(_s.GameDir, "game", "db", "daprod.sqlite3")) && !args.Contains("db_location"))
             args += " +db_location game/db/daprod.sqlite3";
+        AddonInstaller.Install(); // pulsanti e finestre in più del mod dell'interfaccia
         var p = Process.Start(new ProcessStartInfo(exe, args) { WorkingDirectory = Path.GetDirectoryName(exe)! });
         if (p == null) { Msg("Impossibile avviare il gioco.", true); return; }
         _gameRunning = true; p.EnableRaisingEvents = true;

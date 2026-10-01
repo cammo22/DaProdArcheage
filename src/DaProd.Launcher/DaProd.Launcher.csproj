@@ -4,7 +4,7 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
-    <Version>1.9.2</Version>
+    <Version>1.10.0</Version>
     <ApplicationIcon>Assets\launcher.ico</ApplicationIcon>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>DaProdLauncher</AssemblyName>
@@ -16,6 +16,8 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="Assets\splash.png" LogicalName="splash.png" />
+    <EmbeddedResource Include="..\..\addons\DaProdMod\toc.g" LogicalName="addon_toc.g" />
+    <EmbeddedResource Include="..\..\addons\DaProdMod\main.lua" LogicalName="addon_main.lua" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
