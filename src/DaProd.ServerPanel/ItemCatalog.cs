@@ -42,9 +42,15 @@ public static class ItemCatalog
             var names = new Dictionary<uint, string>();
             using (var q = c.CreateCommand())
             {
-                q.CommandText = "SELECT idx, en_us FROM localized_texts WHERE tbl_name='items' AND tbl_column_name='name' AND en_us<>''";
+                // inglese, altrimenti il nome originale (coreano): nessun oggetto resta fuori
+                q.CommandText = "SELECT idx, en_us, ko FROM localized_texts WHERE tbl_name='items' AND tbl_column_name='name'";
                 using var r = q.ExecuteReader();
-                while (r.Read()) names[(uint)r.GetInt64(0)] = r.GetString(1).Trim();
+                while (r.Read())
+                {
+                    var en = r.IsDBNull(1) ? "" : r.GetString(1).Trim();
+                    var ko = r.IsDBNull(2) ? "" : r.GetString(2).Trim();
+                    names[(uint)r.GetInt64(0)] = en.Length > 0 ? en : ko;
+                }
             }
             using (var q = c.CreateCommand())
             {
@@ -53,7 +59,7 @@ public static class ItemCatalog
                 while (r.Read())
                 {
                     var id = (uint)r.GetInt64(0);
-                    if (!names.TryGetValue(id, out var n) || n.Length == 0 || Bad.IsMatch(n) || Cjk.IsMatch(n)) continue;
+                    if (!names.TryGetValue(id, out var n) || n.Length == 0) n = "Item #" + id;
                     list.Add(new Item(id, n, r.IsDBNull(1) ? 0 : (uint)r.GetInt64(1), r.IsDBNull(2) ? 0 : (uint)r.GetInt64(2),
                         r.IsDBNull(4) ? -1 : (int)r.GetInt64(4), r.IsDBNull(3) ? 0 : (int)r.GetInt64(3), n.ToLowerInvariant()));
                 }
