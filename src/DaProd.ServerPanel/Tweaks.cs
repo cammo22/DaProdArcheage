@@ -18,6 +18,7 @@ public static class Tweaks
         new("geoData", "Memoria", "Navigazione precisa dei dungeon (GeoData)", PanelSettings.LowRam ? 0 : 1, "1 = carica i dati di navigazione (circa 1 GB di RAM in più). 0 = usa le mappe di altezza. Serve riavvio del server."),
         new("dailyInstant", "Missioni", "Daily Contract: completamento istantaneo", 1, "1 = appena accetti un Daily Contract (Orario giornaliero) la missione si completa da sola e dà il premio. 0 = vanno fatte davvero."),
         new("allRecipes", "Mestieri", "Folio: tutte le ricette utilizzabili", 1, "1 = anche le ricette che richiedono un oggetto-ricetta si possono creare senza averlo imparato."),
+        new("towerDefs", "Eventi", "Eventi automatici a ondate (Blue Salt, difese...)", 0, "1 = partono da soli gli eventi con messaggi tipo \"controlla la bacheca della Blue Salt Brotherhood\". 0 = spenti (niente messaggi ripetuti)."),
         new("dapMenu", "Creativo", "Menu oggetti /dap", 1, "1 = scrivendo /dap in chat si apre il menu con tutti gli oggetti del gioco (sul launcher), con anteprima e ricerca, per darseli. 0 = disattivato."),
         new("rerollUndo", "Sintesi", "Replace Effect: si può annullare", 1, "1 = dopo aver sostituito un effetto puoi scrivere /annulla in chat per rimettere quello vecchio (entro 30 minuti) e riavere il tentativo."),
         new("dailyAuto", "Missioni", "Daily Contract: si completano da sole", 1, "1 = finiti gli obiettivi di un Daily Contract la missione si chiude da sola e dà subito i premi (senza consegna a un PNG). 0 = comportamento originale."),

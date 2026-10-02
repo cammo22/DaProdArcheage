@@ -699,7 +699,16 @@
              return;
 --- a/AAEmu.WorldServer/AAEmu.World/Core/Relay/TowerDefScheduler.cs
 +++ b/AAEmu.WorldServer/AAEmu.World/Core/Relay/TowerDefScheduler.cs
-@@ -426,7 +426,7 @@
+@@ -403,6 +403,8 @@
+ 
+     private static void Start(TowerDef towerDef, DateTime now, bool manual, bool fromGameTime, string reason)
+     {
++        if (!manual && !AAEmu.Game.DaProdTweaks.On("towerDefs"))
++            return; // DaProd: eventi automatici (rifornimenti Blue Salt, assedi a ondate...) spenti di default
+         // Soft refresh: query any loaded zone that has not yet reported for this def.
+         foreach (var zone in LoadedZones())
+         {
+@@ -426,7 +428,7 @@
          var hosts = EnumeratePlayableHosts(towerDef.Id, manualFallbackAll: manual).ToList();
          if (hosts.Count == 0)
          {
@@ -979,6 +988,34 @@
                  ApplyWorld(character, zoneId, x, y, z, yawRad, reason);
                  return true;
              case TeleportLandingKind.InstanceDungeon:
+--- a/AAEmu.Game/Core/Packets/C2G/CSChangeMateEquipmentPacket.cs
++++ b/AAEmu.Game/Core/Packets/C2G/CSChangeMateEquipmentPacket.cs
+@@ -118,7 +118,7 @@
+     private static bool TryApply(Character character, Mate mate, MateEquipRequest request)
+     {
+         var container1 = ResolveContainer(character, mate, request.Slot1Type);
+-        var container2 = request.Slot2Type == SlotType.EquipmentMate ? mate.Equipment : null;
++        var container2 = IsMateSlot(request.Slot2Type) ? mate.Equipment : null;
+         if (container1 == null || container2 == null)
+         {
+             Logger.Warn(
+@@ -173,12 +173,16 @@
+         return true;
+     }
+ 
++    /// <summary>DaProd: the 10.0.2.13 client names the mount gear container 252 on the wire (the enum only knew 237), so every mount armor change was refused.</summary>
++    private static bool IsMateSlot(SlotType t) => t == SlotType.EquipmentMate || (byte)t == 252;
++
+     private static ItemContainer ResolveContainer(Character character, Mate mate, SlotType slotType)
+     {
+         return slotType switch
+         {
+             SlotType.Inventory => character.Inventory.Bag,
+             SlotType.EquipmentMate => mate.Equipment,
++            _ when IsMateSlot(slotType) => mate.Equipment,
+             _ => null
+         };
+     }
 --- /dev/null
 +++ b/AAEmu.WorldServer/AAEmu.World/Core/DaProdCommands.cs
 @@ -0,0 +1,172 @@

@@ -20,7 +20,11 @@ sealed class DapForm : Form
     readonly ImageList _imgs = new() { ImageSize = new Size(48, 48), ColorDepth = ColorDepth.Depth32Bit };
     readonly NumericUpDown _count = new() { Minimum = 1, Maximum = 9999, Value = 1, Width = 80, BackColor = Theme.Field, ForeColor = Theme.Text, Font = new Font("Segoe UI", 11) };
     readonly RoundButton _give = new() { Text = "Dai al personaggio", Fill = Theme.Green, Width = 190, Height = 34 };
-    readonly RoundButton _more = new() { Text = "Altri risultati", Fill = Theme.Blue, Width = 140, Height = 34, Visible = false };
+    readonly RoundButton _prev = new() { Text = "< Indietro", Fill = Theme.Blue, Width = 110, Height = 34, Enabled = false };
+    readonly RoundButton _next = new() { Text = "Avanti >", Fill = Theme.Blue, Width = 110, Height = 34, Enabled = false };
+    readonly Label _pageLbl = new() { AutoSize = true, ForeColor = Theme.Text, Margin = new Padding(8, 8, 8, 0), Text = "Pagina 1" };
+    const int PageSize = 200;
+    int _page;
     readonly Label _status = new() { AutoSize = false, Dock = DockStyle.Fill, ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft, Font = Theme.Small };
     readonly System.Windows.Forms.Timer _debounce = new() { Interval = 300 };
     readonly Dictionary<uint, string> _iconKeys = [];
@@ -47,8 +51,8 @@ sealed class DapForm : Form
         var bottom = new Panel { Dock = DockStyle.Bottom, Height = 58, Padding = new Padding(14, 10, 14, 8) };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
         var qty = new Label { Text = "Quantità", AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(0, 8, 6, 0) };
-        _give.Margin = new Padding(12, 0, 0, 0); _more.Margin = new Padding(12, 0, 0, 0);
-        buttons.Controls.AddRange([qty, _count, _more, _give]);
+        _give.Margin = new Padding(12, 0, 0, 0);
+        buttons.Controls.AddRange([_prev, _pageLbl, _next, new Label { Width = 14 }, qty, _count, _give]);
         bottom.Controls.Add(_status); bottom.Controls.Add(buttons);
 
         var host = new Panel { Dock = DockStyle.Fill, Padding = new Padding(14, 4, 14, 4) };
@@ -60,7 +64,8 @@ sealed class DapForm : Form
         _cat.SelectedIndexChanged += async (_, _) => await Reload();
         _give.Click += async (_, _) => await Give();
         _list.DoubleClick += async (_, _) => await Give();
-        _more.Click += async (_, _) => await Load(append: true);
+        _prev.Click += async (_, _) => { _page--; await Load(); };
+        _next.Click += async (_, _) => { _page++; await Load(); };
         Shown += async (_, _) => { _search.Focus(); await LoadCats(); await Reload(); };
         FormClosed += (_, _) => { _debounce.Dispose(); _imgs.Dispose(); };
     }
@@ -82,22 +87,22 @@ sealed class DapForm : Form
 
     sealed record CatItem(uint Id, string Name) { public override string ToString() => Name; }
 
-    Task Reload() => Load(append: false);
+    Task Reload() { _page = 0; return Load(); }
 
-    async Task Load(bool append)
+    async Task Load()
     {
         var gen = ++_gen;
         try
         {
             var cat = (_cat.SelectedItem as CatItem)?.Id ?? 0;
-            var skip = append ? _loaded : 0;
+            var skip = _page * PageSize;
             _status.Text = "Carico...";
             var doc = await _http.GetFromJsonAsync<JsonElement>(Url("/dap/items", $"&q={Uri.EscapeDataString(_search.Text)}&cat={cat}&skip={skip}"));
             if (gen != _gen) return;
             if (doc.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False) { _status.Text = doc.GetProperty("message").GetString() ?? "Rifiutato."; return; }
             _total = doc.GetProperty("total").GetInt32();
             _list.BeginUpdate();
-            if (!append) { _list.Items.Clear(); _rows.Clear(); _loaded = 0; }
+            _list.Items.Clear(); _rows.Clear(); _loaded = 0;
             var pending = new List<(ListViewItem Item, uint Icon)>();
             foreach (var it in doc.GetProperty("items").EnumerateArray())
             {
@@ -108,8 +113,10 @@ sealed class DapForm : Form
                 if (!_iconKeys.ContainsKey(icon)) pending.Add((lvi, icon));
             }
             _list.EndUpdate();
-            _more.Visible = _loaded < _total;
-            _status.Text = $"{_loaded} di {_total} oggetti. Doppio clic o \"Dai\" per metterlo in borsa.";
+            var pages = Math.Max(1, (_total + PageSize - 1) / PageSize);
+            _pageLbl.Text = $"Pagina {_page + 1} / {pages}";
+            _prev.Enabled = _page > 0; _next.Enabled = _page + 1 < pages;
+            _status.Text = $"{_total} oggetti. Doppio clic o \"Dai\" per metterlo in borsa.";
             _ = LoadIcons(pending, gen);
         }
         catch (Exception ex) { _status.Text = "Errore: " + ex.Message; }
